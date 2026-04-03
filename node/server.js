@@ -24,24 +24,20 @@ app.get('/', (req, res) => {
 
 // app.get('/join', (req, res) => {
 app.post('/join', (req, res) => {
-    // 쿼리스트링으로 받은 데이터 꺼내기 
-    // console.log(req.query)
-    // let id = req.query.id
-    // let pw = req.query.pw
-    // let nick = req.query.nick
-
-    let id = req.body.id
-    let pw = req.body.pw
-    let nick = req.body.nick
+    let doc_id = req.body.doc_id
+    let password = req.body.passward
+    let doc_name = req.body.doc_name
+    let hospital_name = req.body.hospital_name
+    let license_no = req.body.license_no
 
     // DB에 저장
-    let sql = "insert into member values( ?, ?, ? )"
-    conn.query(sql,[id, pw, nick], (err, rows)=>{
+    let sql = "insert into TB_DOCTOR( doc_id, password, doc_name, hospital_name, license_no )"
+    conn.query(sql,[doc_id, password, doc_name, hospital_name, license_no], (err, rows)=>{
         // err : 쿼리문 실행 실패시 이유가 여기에 담겨짐
         // rows : 쿼리문 성공 정보가 담겨짐
         if(err == null){
             // rows.affectedRows : 영향을 받은 행의 개수
-            if(rows.affectedRows>0){
+            if(rows.rowCount > 0){
                 res.send(1)
             }else{
                 res.send(0)
