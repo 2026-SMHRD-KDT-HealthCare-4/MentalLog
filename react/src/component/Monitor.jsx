@@ -92,8 +92,8 @@ const Monitor = () => {
   const [rmssdData, setRmssdData] = useState([])
 
   // ML 결과 (동그라미 업데이트용)
-  const [mlHrvMean, setMlHrvMean] = useState(null)
-  const [mlHrvMax, setMlHrvMax] = useState(null)
+  const [mlHrMean, setMlHrMean] = useState(null)
+  const [mlHrMax, setMlHrMax] = useState(null)
 
   // 스트레스 지수
   const [avgStress, setAvgStress] = useState(38)
@@ -144,6 +144,8 @@ const Monitor = () => {
           minute: now.getMinutes(),
           second: now.getSeconds(),
           data_points: 10,
+          pat_id: patient?.pat_id,
+          session_id: `${patient?.pat_id}_${now.toISOString().slice(0, 10)}`,
         })
         const data = res.data
 
@@ -160,8 +162,8 @@ const Monitor = () => {
         }
 
         if (data.ml_triggered && data.ml_result) {
-          setMlHrvMean(Math.round(data.ml_result.hrv_mean))
-          setMlHrvMax(Math.round(data.ml_result.hrv_max))
+          setMlHrMean(Math.round(data.ml_result.hr_mean))
+          setMlHrMax(Math.round(data.ml_result.hr_max))
         }
       } catch (e) {}
     }, 2000)
@@ -288,14 +290,14 @@ const Monitor = () => {
             {/* 스트레스 원형 3개 */}
             <div className="stress-circles-section">
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(mlHrvMean ?? avgStress)}`}>
-                  <span className="num">{mlHrvMean ?? avgStress}</span>
+                <div className={`stress-circle-ring ${circleClass(mlHrMean ?? avgStress)}`}>
+                  <span className="num">{mlHrMean ?? avgStress}</span>
                 </div>
                 <span className="stress-circle-label">평균</span>
               </div>
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(mlHrvMax ?? peakStress)}`}>
-                  <span className="num">{mlHrvMax ?? peakStress}</span>
+                <div className={`stress-circle-ring ${circleClass(mlHrMax ?? peakStress)}`}>
+                  <span className="num">{mlHrMax ?? peakStress}</span>
                 </div>
                 <span className="stress-circle-label">최고</span>
               </div>
