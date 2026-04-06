@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 # === ML 모델 로드 ===
 try:
-    ml_model = joblib.load('D:\멘탈로그 데이터셋/rf_model (1).pkl')
+    ml_model = joblib.load('mental/MentalLog/python/rf_model (1).pkl')
 except:
     ml_model = None
 
