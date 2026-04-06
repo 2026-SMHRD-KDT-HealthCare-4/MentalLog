@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import json
 from datetime import datetime, timedelta
@@ -6,12 +6,26 @@ from collections import deque
 import numpy as np
 from typing import Dict
 import joblib
+import io
+import librosa
+import uvicorn
 
 # === ML 모델 로드 ===
 try:
     ml_model = joblib.load('models/health_metrics_model.pkl')
 except:
     ml_model = None
+
+# === 음성 분석 ML 모델 로드 ===
+try:
+    voice_model = joblib.load('voice_stress_model.pkl')
+    voice_le = joblib.load('label_encoder.pkl')
+    print("음성 AI 모델 로딩 완료!")
+except Exception as e:
+    print(f"음성 모델 로드 실패 (파일 경로를 확인하세요): {e}")
+    voice_model = None
+    voice_le = None
+
 
 # === FastAPI 앱 설정 ===
 app = FastAPI()
@@ -177,6 +191,36 @@ async def health_check():
         "buffer_size": len(metrics_buffer.rmssd_buffer)
     }
 
+# === 실시간 음성 스트레스 분석 API ===
+@app.post("/api/analyze-voice")
+async def analyze_voice(audio_file: UploadFile = File(...)):
+    """
+    프론트엔드에서 녹음된 음성 파일을 받아 스트레스 수치를 분석합니다.
+    """
+    if voice_model is None or voice_le is None:
+        return {"status": "error", "message": "음성 모델이 로드되지 않았습니다."}
+        
+    try:
+        # 1. 파일 읽기
+        contents = await audio_file.read()
+        
+        # 2. 특징 추출 (학습할 때와 동일하게 3초, 40개 MFCC 사용)
+        y, sr = librosa.load(io.BytesIO(contents), sr=None, duration=3.0)
+        mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
+        mfccs_scaled = np.mean(mfccs.T, axis=0).reshape(1, -1)
+        
+        # 3. 모델 예측 및 번역
+        prediction_num = voice_model.predict(mfccs_scaled)
+        predicted_status = voice_le.inverse_transform(prediction_num)[0]
+        
+        return {
+            "status": "success",
+            "filename": audio_file.filename,
+            "result": predicted_status
+        }
+        
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
