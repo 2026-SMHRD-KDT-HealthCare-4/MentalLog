@@ -18,13 +18,13 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=["http://localhost:3001", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# === 더미 데이터 생성기 ===
+# === 더미 데이터 생성기 === 여기는 있는 데이터 가지고 수정할 부분
 class DummyDataGenerator:
     """시계열 더미 데이터 생성"""
     def __init__(self):
@@ -95,7 +95,7 @@ class MetricsBuffer:
             "sd1_sum": float(np.sum(self.sd1_buffer)),
         }
 
-        # ML 모델 실행
+        # ML 모델 실행/ 1분마다 모은 데이터를 모델에 집어넣는 코드
         if ml_model is not None:
             try:
                 features = np.array([[

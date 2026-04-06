@@ -1,0 +1,818 @@
+/* ========================================
+   MentalLog - Light Medical Theme
+   피그마 디자인 기반
+   ======================================== */
+
+/* ── 인증 페이지 (로그인 / 회원가입) ── */
+
+.auth-page {
+  min-height: 100vh;
+  background: #EBEBEB;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 80px;
+}
+
+.auth-brand {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 42px;
+  color: #222;
+  margin-bottom: 28px;
+  letter-spacing: -1px;
+}
+
+.auth-card {
+  background: #D9D9D9;
+  border-radius: 10px;
+  padding: 28px 36px;
+  width: 480px;
+  max-width: 95vw;
+}
+
+.auth-card-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #333;
+  text-align: center;
+  margin-bottom: 22px;
+}
+
+.auth-field {
+  display: flex;
+  align-items: center;
+  margin-bottom: 14px;
+  gap: 12px;
+}
+
+.auth-field label {
+  width: 90px;
+  font-size: 13px;
+  color: #555;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.auth-input {
+  flex: 1;
+  height: 34px;
+  background: #E8E8E8;
+  border: 1px solid #C0C0C0;
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: #333;
+  outline: none;
+}
+.auth-input:focus { border-color: #888; background: #fff; }
+.auth-input::placeholder { color: #AAA; }
+
+.auth-submit-btn {
+  width: 100%;
+  height: 42px;
+  background: #222;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 15px;
+  margin-top: 10px;
+}
+.auth-submit-btn:hover { background: #000; }
+
+.auth-btn-row {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.auth-link {
+  text-align: center;
+  margin-top: 14px;
+  font-size: 12px;
+  color: #777;
+}
+.auth-link a { color: #4A90D9; }
+
+.btn-dark {
+  padding: 8px 28px;
+  background: #444;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.btn-dark:hover { background: #222; }
+
+.btn-light {
+  padding: 8px 28px;
+  background: #fff;
+  color: #555;
+  border: 1px solid #CCC;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.btn-light:hover { background: #F0F0F0; }
+
+
+/* ── 환자 스케줄 페이지 ── */
+
+.schedule-page {
+  min-height: 100vh;
+  background: #EBEBEB;
+  padding: 24px 32px;
+}
+
+.schedule-brand {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 38px;
+  color: #222;
+  margin-bottom: 16px;
+}
+
+.schedule-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  position: relative;
+}
+
+.schedule-search-input {
+  width: 280px;
+  height: 32px;
+  border: 1px solid #CCC;
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 13px;
+  background: #fff;
+  outline: none;
+}
+.schedule-search-input:focus { border-color: #888; }
+
+.schedule-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 220px;
+  gap: 14px;
+  align-items: start;
+}
+
+.schedule-column {
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #DDD;
+  overflow: hidden;
+}
+
+.schedule-col-header {
+  padding: 10px 14px;
+  background: #F0F0F0;
+  border-bottom: 1px solid #DDD;
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+}
+
+.schedule-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 14px;
+  border-bottom: 1px solid #F2F2F2;
+  gap: 6px;
+}
+.schedule-row:last-child { border-bottom: none; }
+.schedule-row:hover { background: #F5F8FF; cursor: pointer; }
+
+.schedule-row-num {
+  width: 18px;
+  font-size: 11px;
+  color: #AAA;
+  flex-shrink: 0;
+}
+
+.schedule-row-content {
+  flex: 1;
+  font-size: 12px;
+  color: #444;
+  line-height: 1.5;
+}
+.schedule-row-content .time  { color: #777; }
+.schedule-row-content .name  { font-weight: 600; color: #222; }
+.schedule-row-content .badge-o { color: #4CAF50; font-weight: 600; }
+.schedule-row-content .badge-x { color: #F44336; font-weight: 600; }
+
+.history-sidebar {
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #DDD;
+  overflow: hidden;
+}
+
+.history-sidebar-header {
+  padding: 10px 14px;
+  background: #F0F0F0;
+  border-bottom: 1px solid #DDD;
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+}
+
+.history-group {
+  padding: 10px 14px;
+  border-bottom: 1px solid #F0F0F0;
+}
+
+.history-group-title {
+  font-size: 11px;
+  color: #888;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.history-patient-item {
+  font-size: 12px;
+  color: #555;
+  padding: 2px 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.history-patient-item::before { content: '•'; color: #BBB; }
+.history-patient-item:hover { color: #4A90D9; cursor: pointer; }
+
+.search-dropdown {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  width: 280px;
+  background: #fff;
+  border: 1px solid #CCC;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  z-index: 200;
+}
+
+.search-dropdown-item {
+  padding: 8px 14px;
+  font-size: 13px;
+  color: #333;
+  border-bottom: 1px solid #F5F5F5;
+}
+.search-dropdown-item:last-child { border-bottom: none; }
+.search-dropdown-item:hover { background: #F0F5FF; color: #4A90D9; cursor: pointer; }
+
+
+/* ── 메인 모니터 페이지 ── */
+
+.monitor-root {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #EBEBEB;
+  overflow: hidden;
+}
+
+/* 상단 네비게이션 */
+.monitor-navbar {
+  height: 46px;
+  flex-shrink: 0;
+  background: #F0F0F0;
+  border-bottom: 1px solid #CCCCCC;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  gap: 10px;
+}
+
+.nav-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.nav-icon-btn {
+  background: none;
+  border: none;
+  font-size: 14px;
+  color: #555;
+  padding: 4px 7px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.nav-icon-btn:hover { background: #E0E0E0; }
+
+.nav-patient-nav {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.nav-arrow-btn {
+  background: #E5E5E5;
+  border: 1px solid #BBBBBB;
+  font-size: 11px;
+  color: #555;
+  padding: 4px 10px;
+  line-height: 1.4;
+}
+.nav-arrow-btn:first-child { border-radius: 4px 0 0 4px; }
+.nav-arrow-btn:last-child  { border-radius: 0 4px 4px 0; }
+.nav-arrow-btn:hover { background: #D0D0D0; }
+
+.nav-patient-name-btn {
+  background: #fff;
+  border: 1px solid #BBBBBB;
+  border-left: none;
+  border-right: none;
+  padding: 4px 24px;
+  font-size: 13px;
+  color: #333;
+  min-width: 120px;
+  text-align: center;
+  line-height: 1.6;
+}
+.nav-patient-name-btn:hover { background: #F5F5FF; }
+
+.patient-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff;
+  border: 1px solid #CCC;
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+  z-index: 300;
+  min-width: 260px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.patient-dropdown-item {
+  padding: 8px 16px;
+  font-size: 12px;
+  color: #333;
+  border-bottom: 1px solid #F5F5F5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.patient-dropdown-item:last-child { border-bottom: none; }
+.patient-dropdown-item:hover { background: #F0F5FF; cursor: pointer; }
+.patient-dropdown-item.current { background: #EEF4FF; font-weight: 600; }
+
+.nav-user-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-user-label { font-size: 12px; color: #666; }
+
+.nav-user-btn {
+  width: 32px;
+  height: 32px;
+  background: #4A90D9;
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 페이지 바디 */
+.monitor-body {
+  flex: 1;
+  min-height: 0;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+/* 상단: 좌측 패널 + 그래프 */
+.monitor-top {
+  display: grid;
+  grid-template-columns: 268px 1fr;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 좌측 패널 */
+.left-panel {
+  background: #fff;
+  border: 1px solid #D0D0D0;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.patient-info-section {
+  flex-shrink: 0;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid #EEEEEE;
+}
+
+.patient-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #111;
+  margin-bottom: 3px;
+}
+
+.patient-sub {
+  font-size: 11px;
+  color: #888;
+  line-height: 1.5;
+}
+
+/* 스트레스 원형 3개 */
+.stress-circles-section {
+  flex-shrink: 0;
+  padding: 12px 10px 10px;
+  border-bottom: 1px solid #EEEEEE;
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+}
+
+.stress-circle-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.stress-circle-ring {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  border: 5px solid #CCC;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stress-circle-ring .num {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.stress-circle-ring.c-green  { border-color: #7CB342; }
+.stress-circle-ring.c-green .num  { color: #558B2F; }
+.stress-circle-ring.c-yellow { border-color: #F9A825; }
+.stress-circle-ring.c-yellow .num { color: #F57F17; }
+.stress-circle-ring.c-orange { border-color: #FB8C00; }
+.stress-circle-ring.c-orange .num { color: #E65100; }
+.stress-circle-ring.c-red    { border-color: #E53935; }
+.stress-circle-ring.c-red .num    { color: #B71C1C; }
+
+.stress-circle-label {
+  font-size: 11px;
+  color: #888;
+}
+
+/* 추세 */
+.trend-section {
+  flex-shrink: 0;
+  padding: 6px 14px 8px;
+  border-bottom: 1px solid #EEEEEE;
+  font-size: 12px;
+  color: #555;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.trend-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+.trend-badge.up   { background: #FDECEA; color: #C62828; }
+.trend-badge.down { background: #E8F5E9; color: #2E7D32; }
+
+/* 키워드 섹션 */
+.keywords-section {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 14px;
+}
+
+.keywords-section-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.keyword-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.kw-chip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 8px;
+  background: #F5F5F5;
+  border: 1px solid #DDD;
+  border-radius: 6px;
+  gap: 4px;
+}
+.kw-chip:hover { background: #E8F0FE; border-color: #AABDF0; cursor: pointer; }
+.kw-chip.selected { background: #E3F2FD; border-color: #90CAF9; }
+
+.kw-word { font-size: 12px; color: #333; font-weight: 600; }
+.kw-time { font-size: 10px; color: #AAA; }
+
+.keyword-detail {
+  background: #F8F9FF;
+  border: 1px solid #C5D4F0;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.keyword-detail-content {
+  font-size: 12px;
+  color: #444;
+  line-height: 1.7;
+}
+
+.keyword-detail-time {
+  font-size: 11px;
+  color: #AAA;
+  margin-top: 6px;
+}
+
+/* 그래프 패널 */
+.graph-panel {
+  background: #fff;
+  border: 1px solid #D0D0D0;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.graph-panel-header {
+  flex-shrink: 0;
+  padding: 10px 16px 8px;
+  border-bottom: 1px solid #EEEEEE;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.graph-title-group h3 {
+  font-size: 15px;
+  font-weight: 700;
+  color: #222;
+  margin-bottom: 2px;
+}
+
+.graph-title-group p {
+  font-size: 11px;
+  color: #AAA;
+}
+
+.hrv-hr-box { text-align: right; }
+
+.hrv-hr-labels {
+  display: flex;
+  gap: 20px;
+  justify-content: flex-end;
+  font-size: 11px;
+  color: #AAA;
+  margin-bottom: 2px;
+}
+
+.hrv-hr-values {
+  display: flex;
+  gap: 20px;
+  font-size: 26px;
+  font-weight: 700;
+  color: #333;
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+.graph-area {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 12px 12px 4px;
+}
+
+/* 하단 섹션 */
+.monitor-bottom {
+  flex-shrink: 0;
+  height: 195px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+/* 의사 소견 패널 */
+.notes-panel {
+  background: #fff;
+  border: 1px solid #D0D0D0;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-header {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid #EEEEEE;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+}
+
+.save-btn {
+  padding: 4px 14px;
+  background: #555;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.save-btn:hover { background: #333; }
+.save-btn.saved { background: #5A9E5A; }
+.save-btn.saved:hover { background: #4A8E4A; }
+
+.complete-btn {
+  padding: 4px 14px;
+  background: #4A90D9;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.complete-btn:hover { background: #2E77C5; }
+
+.notes-textarea {
+  flex: 1;
+  border: none;
+  padding: 10px 14px;
+  font-size: 13px;
+  resize: none;
+  outline: none;
+  color: #333;
+  background: #fff;
+}
+.notes-textarea::placeholder { color: #CCC; }
+.notes-textarea.saved-mode { color: #5A9E5A; }
+
+/* 과거 처방 내용 패널 */
+.prescription-panel {
+  background: #fff;
+  border: 1px solid #D0D0D0;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.prescription-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.prescription-row {
+  display: grid;
+  grid-template-columns: 80px 1fr auto;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #F2F2F2;
+  align-items: start;
+}
+.prescription-row:last-child { border-bottom: none; }
+
+.prescription-date {
+  font-size: 11px;
+  color: #888;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.prescription-content {
+  font-size: 12px;
+  color: #444;
+  line-height: 1.6;
+}
+
+.compare-btn {
+  padding: 2px 8px;
+  background: none;
+  border: 1px solid #CCC;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #777;
+  align-self: center;
+  white-space: nowrap;
+}
+.compare-btn:hover { background: #F0F0F0; }
+
+/* 빈 상태 */
+.empty-state {
+  text-align: center;
+  color: #BBB;
+  padding: 20px;
+  font-size: 12px;
+}
+
+/* 스크롤바 */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #CCC; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #AAA; }
+
+
+/* ── 결과 레포트 ── */
+
+.report-root {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #EBEBEB;
+  overflow: hidden;
+}
+
+.report-body {
+  flex: 1;
+  min-height: 0;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.report-title {
+  flex-shrink: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #222;
+}
+
+.report-top {
+  display: grid;
+  grid-template-columns: 268px 1fr;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.report-bottom {
+  flex-shrink: 0;
+  height: 200px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.report-summary-panel {
+  background: #fff;
+  border: 1px solid #D0D0D0;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.report-summary-body {
+  flex: 1;
+  padding: 12px 14px;
+  font-size: 13px;
+  color: #444;
+  line-height: 1.7;
+  overflow-y: auto;
+}
