@@ -9,6 +9,10 @@ import joblib
 import io
 import librosa
 import uvicorn
+import requests
+import json
+import os
+from dotenv import load_dotenv
 
 # === ML 모델 로드 ===
 try:
@@ -25,6 +29,42 @@ except Exception as e:
     print(f"음성 모델 로드 실패 (파일 경로를 확인하세요): {e}")
     voice_model = None
     voice_le = None
+
+# == 네이버 STT 기능 ==
+@app.post("/api/analyze-voice")
+async def analyze_voice(audio_file: UploadFile = File(...)):
+    try:
+        # 1. 파일 읽기
+        contents = await audio_file.read()
+        
+        # 2. [기존 기능] 자체 AI 모델로 스트레스 분석
+        y, sr = librosa.load(io.BytesIO(contents), sr=None, duration=3.0)
+        mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
+        mfccs_scaled = np.mean(mfccs.T, axis=0).reshape(1, -1)
+        stress_result = voice_le.inverse_transform(voice_model.predict(mfccs_scaled))[0]
+
+        # 3. [신규 기능] 네이버 API로 음성을 텍스트로 변환(STT)
+        headers = {
+            "X-CLOVASPEECH-API-KEY": os.getenv("NCP_CLOVA_SPEECH_SECRET_KEY")
+        }
+        # 네이버 클로바 스피치 규격에 맞춘 데이터 포장
+        files = {
+            'media': contents,
+            'params': (None, json.dumps({"language": "ko-KR", "completion": "sync"}), 'application/json')
+        }
+        
+        stt_response = requests.post(os.getenv("NCP_CLOVA_SPEECH_URL"), headers=headers, files=files)
+        stt_result = stt_response.json().get('text', '인식 실패')
+
+        # 4. 분석 결과와 텍스트 자막을 한꺼번에 반환!
+        return {
+            "status": "success",
+            "stress": stress_result,
+            "transcript": stt_result
+        }
+        
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 # === FastAPI 앱 설정 ===
