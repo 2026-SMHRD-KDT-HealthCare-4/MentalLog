@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
+<<<<<<< HEAD
 **/node_modules
+=======
+**/node_moduels
+>>>>>>> 6459a7fd9290aabc34b45e24a7c42d404fba0901
