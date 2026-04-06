@@ -9,7 +9,7 @@ import joblib
 
 # === ML 모델 로드 ===
 try:
-    ml_model = joblib.load('models/health_metrics_model.pkl')
+    ml_model = joblib.load('C:/Users/smhrd/Desktop/rf_model (1).pkl')
 except:
     ml_model = None
 
