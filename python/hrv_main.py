@@ -14,6 +14,8 @@ import json
 import os
 from dotenv import load_dotenv
 
+NODE_API = "http://localhost:3001"
+
 # === ML 모델 로드 ===
 try:
     ml_model = joblib.load('mental/MentalLog/python/rf_model (1).pkl')
@@ -92,18 +94,18 @@ class DummyDataGenerator:
         
         # 시간대별 기본값
         if 6 <= hour < 12:
-            base_hrv, base_rmssd, base_pnn50, base_sd1 = 45, 28, 8, 20
+            base_hr, base_rmssd, base_pnn50, base_sd1 = 45, 28, 8, 20
         elif 12 <= hour < 18:
-            base_hrv, base_rmssd, base_pnn50, base_sd1 = 55, 35, 15, 25
+            base_hr, base_rmssd, base_pnn50, base_sd1 = 55, 35, 15, 25
         else:
-            base_hrv, base_rmssd, base_pnn50, base_sd1 = 65, 42, 22, 30
+            base_hr, base_rmssd, base_pnn50, base_sd1 = 65, 42, 22, 30
         
         # 분/초 단위 미세 변동
         minute_factor = (minute + second / 60) / 60
         second_noise = np.sin(second * 0.1) * 5
         
         return {
-            "hrv": max(20, base_hrv + minute_factor * 15 + second_noise + np.random.normal(0, 2)),
+            "hr": max(20, base_hr + minute_factor * 15 + second_noise + np.random.normal(0, 2)),
             "rmssd": max(10, base_rmssd + minute_factor * 12 + second_noise + np.random.normal(0, 1.5)),
             "pnn50": max(0, base_pnn50 + minute_factor * 10 + second_noise + np.random.normal(0, 1)),
             "sd1": max(5, base_sd1 + minute_factor * 8 + second_noise + np.random.normal(0, 1.5))
@@ -112,14 +114,14 @@ class DummyDataGenerator:
 # === 글로벌 상태 관리 ===
 class MetricsBuffer:
     def __init__(self, window_size: int = 6000):
-        self.hrv_buffer = deque(maxlen=window_size)
+        self.hr_buffer = deque(maxlen=window_size)
         self.rmssd_buffer = deque(maxlen=window_size)
         self.pnn50_buffer = deque(maxlen=window_size)
         self.sd1_buffer = deque(maxlen=window_size)
         self.last_ml_run = None
 
-    def add_metrics(self, hrv: float, rmssd: float, pnn50: float, sd1: float):
-        self.hrv_buffer.append(hrv)
+    def add_metrics(self, hr: float, rmssd: float, pnn50: float, sd1: float):
+        self.hr_buffer.append(hr)
         self.rmssd_buffer.append(rmssd)
         self.pnn50_buffer.append(pnn50)
         self.sd1_buffer.append(sd1)
@@ -132,28 +134,28 @@ class MetricsBuffer:
         return False
 
     def run_ml_model(self, current_time: datetime) -> Dict:
-        if len(self.hrv_buffer) == 0:
+        if len(self.hr_buffer) == 0:
             return {"status": "insufficient_data"}
 
         metrics_summary = {
             "timestamp": current_time.isoformat(),
             "minute": f"{current_time.hour:02d}:{current_time.minute:02d}",
-            "data_points": len(self.hrv_buffer),
-            "hrv_mean": float(np.mean(self.hrv_buffer)),
-            "hrv_sum": float(np.sum(self.hrv_buffer)),
+            "data_points": len(self.hr_buffer),
+            "hr_mean": float(np.mean(self.hr_buffer)),
+            "hr_max": float(np.max(self.hr_buffer)),
             "rmssd_mean": float(np.mean(self.rmssd_buffer)),
-            "rmssd_sum": float(np.sum(self.rmssd_buffer)),
+            "rmssd_max": float(np.max(self.rmssd_buffer)),
             "pnn50_mean": float(np.mean(self.pnn50_buffer)),
-            "pnn50_sum": float(np.sum(self.pnn50_buffer)),
+            "pnn50_max": float(np.max(self.pnn50_buffer)),
             "sd1_mean": float(np.mean(self.sd1_buffer)),
-            "sd1_sum": float(np.sum(self.sd1_buffer)),
+            "sd1_max": float(np.max(self.sd1_buffer)),
         }
 
         # ML 모델 실행/ 1분마다 모은 데이터를 모델에 집어넣는 코드
         if ml_model is not None:
             try:
                 features = np.array([[
-                    metrics_summary["hrv_mean"],
+                    metrics_summary["hr_mean"],
                     metrics_summary["rmssd_mean"],
                     metrics_summary["pnn50_mean"],
                     metrics_summary["sd1_mean"]
@@ -188,13 +190,15 @@ async def generate_metrics_for_time(request: Dict):
         minute = request.get("minute", 0)
         second = request.get("second", 0)
         data_points = request.get("data_points", 100)
+        pat_id = request.get("pat_id", None)
+        session_id = request.get("session_id", None)
         
         timestamp = datetime.now().replace(hour=hour, minute=minute, second=second, microsecond=0)
         
         results = {
             "timestamp": timestamp.isoformat(),
             "data_generated": 0,
-            "rmssd_samples": [],
+            "realtime_rmssd": [],
             "ml_triggered": False,
             "ml_result": None
         }
@@ -203,7 +207,7 @@ async def generate_metrics_for_time(request: Dict):
         for i in range(data_points):
             metrics = dummy_generator.generate_metrics_for_timestamp(timestamp)
             metrics_buffer.add_metrics(
-                hrv=metrics["hrv"],
+                hr=metrics["hr"],
                 rmssd=metrics["rmssd"],
                 pnn50=metrics["pnn50"],
                 sd1=metrics["sd1"]
@@ -211,14 +215,40 @@ async def generate_metrics_for_time(request: Dict):
             results["data_generated"] += 1
             
             if i >= data_points - 10:
-                results["rmssd_samples"].append(round(metrics["rmssd"], 2))
+                results["realtime_rmssd"].append(round(metrics["rmssd"], 2))
         
+        # RMSSD → Node DB 저장
+        if pat_id:
+            for rmssd_val in results["realtime_rmssd"]:
+                try:
+                    requests.post(f"{NODE_API}/api/rmssd", json={
+                        "pat_id": pat_id,
+                        "session_id": session_id,
+                        "rmssd_value": rmssd_val
+                    }, timeout=2)
+                except Exception:
+                    pass
+
         # 분이 바뀔 때 ML 실행
         if metrics_buffer.should_run_ml(timestamp):
             ml_result = metrics_buffer.run_ml_model(timestamp)
             results["ml_triggered"] = True
             results["ml_result"] = ml_result
-        
+
+            # ML 결과 → Node DB 저장
+            if pat_id:
+                try:
+                    requests.post(f"{NODE_API}/api/stress", json={
+                        "pat_id": pat_id,
+                        "session_id": session_id,
+                        "hrv_stress": ml_result.get("ml_prediction", 0),
+                        "voice_stress": 0,
+                        "questionnaire_stress": 0,
+                        "total_stress": ml_result.get("ml_prediction", 0)
+                    }, timeout=2)
+                except Exception:
+                    pass
+
         return results
     
     except Exception as e:
