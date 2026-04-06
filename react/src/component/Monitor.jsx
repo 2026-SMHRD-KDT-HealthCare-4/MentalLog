@@ -8,6 +8,7 @@ import axios from 'axios'
 import '../styles/monitor.css'
 
 const API = 'http://localhost:3001'
+const PYTHON_API = 'http://localhost:8000'
 
 // ── 원형 색상 ──
 function circleClass(val) {
@@ -82,11 +83,17 @@ const Monitor = () => {
   const [showDropdown, setShowDropdown] = useState(false)
 
   // RMSSD 데이터
-  const [rmssdData, setRmssdData] = useState([])
   const [currentRmssd, setCurrentRmssd] = useState(45)
   const [sessionActive, setSessionActive] = useState(true)
   const rmssdRef = useRef(null)
   const baseRef = useRef(45)
+
+  // RMSSD 차트 데이터 (Python API)
+  const [rmssdData, setRmssdData] = useState([])
+
+  // ML 결과 (동그라미 업데이트용)
+  const [mlHrvMean, setMlHrvMean] = useState(null)
+  const [mlHrvMax, setMlHrvMax] = useState(null)
 
   // 스트레스 지수
   const [avgStress, setAvgStress] = useState(38)
@@ -126,6 +133,41 @@ const Monitor = () => {
       .catch(() => {})
   }, [patientId])
 
+  // ── Python API 폴링 (RMSSD 차트 + ML 동그라미) ──
+  useEffect(() => {
+    if (!sessionActive) return
+    const interval = setInterval(async () => {
+      const now = new Date()
+      try {
+        const res = await axios.post(`${PYTHON_API}/generate-metrics`, {
+          hour: now.getHours(),
+          minute: now.getMinutes(),
+          second: now.getSeconds(),
+          data_points: 10,
+        })
+        const data = res.data
+
+        if (data.realtime_rmssd && Array.isArray(data.realtime_rmssd)) {
+          setRmssdData(prev => {
+            const startX = prev.length
+            const newPoints = data.realtime_rmssd.map((v, i) => ({
+              x: startX + i,
+              value: Math.round(v * 100) / 100,
+            }))
+            const next = [...prev, ...newPoints]
+            return next.length > 100 ? next.slice(-100) : next
+          })
+        }
+
+        if (data.ml_triggered && data.ml_result) {
+          setMlHrvMean(Math.round(data.ml_result.hrv_mean))
+          setMlHrvMax(Math.round(data.ml_result.hrv_max))
+        }
+      } catch (e) {}
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [sessionActive])
+
   // ── RMSSD 시뮬레이션 ──
   useEffect(() => {
     if (!sessionActive) return
@@ -133,10 +175,6 @@ const Monitor = () => {
       baseRef.current = Math.max(15, Math.min(80, baseRef.current + (Math.random() - 0.5) * 7))
       const val = Math.round(baseRef.current * 10) / 10
       setCurrentRmssd(val)
-      setRmssdData(prev => {
-        const next = [...prev, { x: prev.length, value: val }]
-        return next.length > 50 ? next.slice(-50) : next
-      })
       setHrv(Math.round(val))
       setHr(prev => Math.max(60, Math.min(120, prev + Math.round((Math.random() - 0.5) * 3))))
       const stress = rmssdToStress(val)
@@ -250,14 +288,14 @@ const Monitor = () => {
             {/* 스트레스 원형 3개 */}
             <div className="stress-circles-section">
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(avgStress)}`}>
-                  <span className="num">{avgStress}</span>
+                <div className={`stress-circle-ring ${circleClass(mlHrvMean ?? avgStress)}`}>
+                  <span className="num">{mlHrvMean ?? avgStress}</span>
                 </div>
                 <span className="stress-circle-label">평균</span>
               </div>
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(peakStress)}`}>
-                  <span className="num">{peakStress}</span>
+                <div className={`stress-circle-ring ${circleClass(mlHrvMax ?? peakStress)}`}>
+                  <span className="num">{mlHrvMax ?? peakStress}</span>
                 </div>
                 <span className="stress-circle-label">최고</span>
               </div>
