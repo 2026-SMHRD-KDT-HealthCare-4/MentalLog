@@ -41,6 +41,7 @@ const Report = () => {
 
   const [patient, setPatient] = useState(null)
   const [notes, setNotes] = useState('')
+  const [summary, setSummary] = useState('')
   const [cumulativeAvg, setCumulativeAvg] = useState(0)
   const [peakStress, setPeakStress] = useState(0)
   const [threshold, setThreshold] = useState(0)

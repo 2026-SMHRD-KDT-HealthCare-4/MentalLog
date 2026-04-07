@@ -14,7 +14,7 @@ NODE_API = "http://localhost:3001"
 
 # === HRV ML 모델 로드 ===
 try:
-    bundle = joblib.load('mental/MentalLog/python/stress_bundle.pkl')
+    bundle = joblib.load('stress_bundle.pkl')
 except:
     bundle = None
 
