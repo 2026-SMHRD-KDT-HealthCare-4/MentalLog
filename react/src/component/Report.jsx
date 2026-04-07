@@ -6,15 +6,9 @@ import {
 } from 'recharts'
 import axios from 'axios'
 import '../styles/monitor.css'
+import { circleClass } from '../utils/stressUtils'
 
 const API = 'http://localhost:3001'
-
-function circleClass(val) {
-  if (val < 40) return 'c-green'
-  if (val < 60) return 'c-yellow'
-  if (val < 75) return 'c-orange'
-  return 'c-red'
-}
 
 const GraphTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null
@@ -47,31 +41,39 @@ const Report = () => {
 
   const [patient, setPatient] = useState(null)
   const [notes, setNotes] = useState('')
-  const [summary, setSummary] = useState('')
-  const [avgStress] = useState(43)
-  const [peakStress] = useState(90)
-  const [threshold] = useState(64)
-  const [hrv] = useState(62)
-  const [hr] = useState(80)
+  const [cumulativeAvg, setCumulativeAvg] = useState(0)
+  const [peakStress, setPeakStress] = useState(0)
+  const [threshold, setThreshold] = useState(0)
+  const hrv = 62
+  const hr = 80
   const reportTime = new Date().toLocaleString('ko-KR', {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
 
   useEffect(() => {
-    axios.get(`${API}/api/patients/${patientId}`)
-      .then(res => setPatient(res.data))
-      .catch(() => setPatient({
-        pat_id: patientId || 'P002',
-        pat_name: '박망나뇽',
-        pat_birth: '1924-01-01',
-        pat_gender: '남',
-        diagnosis: '범불안장애(GAD)',
-      }))
-
-    axios.get(`${API}/api/notes/${patientId}`)
-      .then(res => { if (res.data?.notes) setNotes(res.data.notes) })
-      .catch(() => {})
+    Promise.all([
+      axios.get(`${API}/api/patients/${patientId}`).catch(() => ({ data: null })),
+      axios.get(`${API}/api/notes/${patientId}`).catch(() => ({ data: null })),
+      axios.get(`${API}/api/history/${patientId}`).catch(() => ({ data: [] })),
+      axios.get(`${API}/api/questionnaire/${patientId}`).catch(() => ({ data: null })),
+    ]).then(([patRes, notesRes, histRes, qRes]) => {
+      setPatient(patRes.data || {
+        pat_id: patientId || 'P002', pat_name: '박망나뇽',
+        pat_birth: '1924-01-01', pat_gender: '남', diagnosis: '범불안장애(GAD)',
+      })
+      if (notesRes.data) {
+        if (notesRes.data.notes) setNotes(notesRes.data.notes)
+        setPeakStress(notesRes.data.stress_peak || 0)
+      }
+      const visits = histRes.data || []
+      if (visits.length > 0) {
+        setCumulativeAvg(Math.round(
+          visits.reduce((sum, v) => sum + (v.stress_total || 0), 0) / visits.length
+        ))
+      }
+      if (qRes.data?.threshold) setThreshold(qRes.data.threshold)
+    })
   }, [patientId])
 
   const age = patient?.pat_birth
@@ -125,8 +127,8 @@ const Report = () => {
             {/* 스트레스 원형 */}
             <div className="stress-circles-section">
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(avgStress)}`}>
-                  <span className="num">{avgStress}</span>
+                <div className={`stress-circle-ring ${circleClass(cumulativeAvg)}`}>
+                  <span className="num">{cumulativeAvg}</span>
                 </div>
                 <span className="stress-circle-label">평균</span>
               </div>
@@ -137,7 +139,7 @@ const Report = () => {
                 <span className="stress-circle-label">최고</span>
               </div>
               <div className="stress-circle-item">
-                <div className="stress-circle-ring c-orange">
+                <div className={`stress-circle-ring ${circleClass(threshold)}`}>
                   <span className="num">{threshold}</span>
                 </div>
                 <span className="stress-circle-label">임계치</span>
@@ -154,7 +156,7 @@ const Report = () => {
             {/* 주요 키워드 */}
             <div className="keywords-section">
               <div className="keywords-section-header">
-                <span>추요 키워드</span>
+                <span>주요 키워드</span>
               </div>
               <div className="keyword-grid">
                 {SAMPLE_KEYWORDS.map(kw => (
