@@ -6,16 +6,16 @@ import {
 } from 'recharts'
 import axios from 'axios'
 import '../styles/monitor.css'
+import { circleClass } from '../utils/stressUtils'
 
 const API = 'http://localhost:3001'
 const PYTHON_API = 'http://localhost:8000'
 
-// ── 원형 색상 ──
-function circleClass(val) {
-  if (val < 40) return 'c-green'
-  if (val < 60) return 'c-yellow'
-  if (val < 75) return 'c-orange'
-  return 'c-red'
+// 가중치 파라미터 (조절 가능)
+const WEIGHTS = {
+  hrv: 0.5,           // HRV 스트레스 가중치
+  voice: 0.2,         // 음성 스트레스 가중치 (모델 학습 완료 후 연결)
+  questionnaire: 0.3, // 문진(PSS) 스트레스 가중치
 }
 
 // RMSSD → 스트레스 변환
@@ -83,7 +83,6 @@ const Monitor = () => {
   const [showDropdown, setShowDropdown] = useState(false)
 
   // RMSSD 데이터
-  const [currentRmssd, setCurrentRmssd] = useState(45)
   const [sessionActive, setSessionActive] = useState(true)
   const rmssdRef = useRef(null)
   const baseRef = useRef(45)
@@ -91,14 +90,12 @@ const Monitor = () => {
   // RMSSD 차트 데이터 (Python API)
   const [rmssdData, setRmssdData] = useState([])
 
-  // ML 결과 (동그라미 업데이트용)
-  const [mlHrMean, setMlHrMean] = useState(null)
-  const [mlHrMax, setMlHrMax] = useState(null)
-
   // 스트레스 지수
-  const [avgStress, setAvgStress] = useState(38)
-  const [peakStress, setPeakStress] = useState(82)
-  const [threshold, setThreshold] = useState(70)
+  const [avgStress, setAvgStress] = useState(38)   // HRV 기반 실시간 평균
+  const [peakStress, setPeakStress] = useState(0)  // HRV 기반 세션 내 최고값
+  const [threshold, setThreshold] = useState(70)   // 문진(PSS) 기반 임계치
+  const [pssScore, setPssScore] = useState(0)       // 문진(PSS) 스트레스 점수
+  const voiceStress = 0                             // 음성 스트레스 (모델 학습 완료 전 placeholder)
   const [hrv, setHrv] = useState(52)
   const [hr, setHr] = useState(72)
 
@@ -116,21 +113,22 @@ const Monitor = () => {
     if (idx !== -1) setCurrentPatientIdx(idx)
     const p = WAITING_PATIENTS.find(p => p.pat_id === patientId) || WAITING_PATIENTS[0]
 
-    axios.get(`${API}/api/patients/${p.pat_id}`)
-      .then(res => setPatient(res.data))
-      .catch(() => setPatient({
-        pat_id: p.pat_id,
-        pat_name: p.pat_name,
-        pat_birth: '1982-05-14',
-        pat_gender: p.gender,
-        pat_phone: '010-1234-5678',
-        diagnosis: '범불안장애(GAD)',
-      }))
-
-    // 소견 불러오기
-    axios.get(`${API}/api/notes/${p.pat_id}`)
-      .then(res => { if (res.data?.notes) setNotes(res.data.notes) })
-      .catch(() => {})
+    Promise.all([
+      axios.get(`${API}/api/patients/${p.pat_id}`).catch(() => ({ data: null })),
+      axios.get(`${API}/api/notes/${p.pat_id}`).catch(() => ({ data: null })),
+      axios.get(`${API}/api/questionnaire/${p.pat_id}`).catch(() => ({ data: null })),
+    ]).then(([patRes, notesRes, qRes]) => {
+      setPatient(patRes.data || {
+        pat_id: p.pat_id, pat_name: p.pat_name,
+        pat_birth: '1982-05-14', pat_gender: p.gender,
+        pat_phone: '010-1234-5678', diagnosis: '범불안장애(GAD)',
+      })
+      if (notesRes.data?.notes) setNotes(notesRes.data.notes)
+      if (qRes.data) {
+        setPssScore(qRes.data.stress_score || 0)
+        setThreshold(qRes.data.threshold || 70)
+      }
+    })
   }, [patientId])
 
   // ── Python API 폴링 (RMSSD 차트 + ML 동그라미) ──
@@ -161,10 +159,7 @@ const Monitor = () => {
           })
         }
 
-        if (data.ml_triggered && data.ml_result) {
-          setMlHrMean(Math.round(data.ml_result.hr_mean))
-          setMlHrMax(Math.round(data.ml_result.hr_max))
-        }
+        // ML 결과: hr_mean/hr_max는 심박수(bpm) 값이므로 스트레스 원형에 직접 사용하지 않음
       } catch (e) {}
     }, 2000)
     return () => clearInterval(interval)
@@ -176,7 +171,6 @@ const Monitor = () => {
     rmssdRef.current = setInterval(() => {
       baseRef.current = Math.max(15, Math.min(80, baseRef.current + (Math.random() - 0.5) * 7))
       const val = Math.round(baseRef.current * 10) / 10
-      setCurrentRmssd(val)
       setHrv(Math.round(val))
       setHr(prev => Math.max(60, Math.min(120, prev + Math.round((Math.random() - 0.5) * 3))))
       const stress = rmssdToStress(val)
@@ -203,6 +197,13 @@ const Monitor = () => {
     navigate(`/monitor/${p.pat_id}`)
   }
 
+  // 가중 평균: HRV 50% + 음성 20%(placeholder 0) + 문진(PSS) 30%
+  const weightedAvg = Math.round(
+    avgStress * WEIGHTS.hrv +
+    voiceStress * WEIGHTS.voice +
+    pssScore * WEIGHTS.questionnaire
+  )
+
   // ── 저장 ──
   const handleSave = async () => {
     const timestamp = new Date().toLocaleString('ko-KR')
@@ -213,8 +214,8 @@ const Monitor = () => {
       await axios.post(`${API}/api/notes`, {
         pat_id: patient?.pat_id,
         notes,
-        stress_total: avgStress,
-        stress_peak: peakStress,
+        stress_total: weightedAvg,  // HRV+음성+문진 가중 평균
+        stress_peak: peakStress,    // HRV 세션 내 최고값
       })
     } catch (e) {}
   }
@@ -290,19 +291,19 @@ const Monitor = () => {
             {/* 스트레스 원형 3개 */}
             <div className="stress-circles-section">
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(mlHrMean ?? avgStress)}`}>
-                  <span className="num">{mlHrMean ?? avgStress}</span>
+                <div className={`stress-circle-ring ${circleClass(weightedAvg)}`}>
+                  <span className="num">{weightedAvg}</span>
                 </div>
                 <span className="stress-circle-label">평균</span>
               </div>
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(mlHrMax ?? peakStress)}`}>
-                  <span className="num">{mlHrMax ?? peakStress}</span>
+                <div className={`stress-circle-ring ${circleClass(peakStress)}`}>
+                  <span className="num">{peakStress}</span>
                 </div>
                 <span className="stress-circle-label">최고</span>
               </div>
               <div className="stress-circle-item">
-                <div className="stress-circle-ring c-orange">
+                <div className={`stress-circle-ring ${circleClass(threshold)}`}>
                   <span className="num">{threshold}</span>
                 </div>
                 <span className="stress-circle-label">임계치</span>
@@ -342,7 +343,7 @@ const Monitor = () => {
                 <>
                   <div className="keywords-section-header">
                     <span>{isSaved ? '주요 키워드' : '실시간 키워드 분석'}</span>
-                    {avgStress > threshold && (
+                    {weightedAvg > threshold && (
                       <span style={{ fontSize: 10, color: '#E07800', background: '#FFF3E0', padding: '1px 6px', borderRadius: 3, border: '1px solid #FFD180' }}>
                         임계치 초과
                       </span>
