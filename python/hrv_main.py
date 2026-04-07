@@ -5,29 +5,28 @@ from datetime import datetime
 from collections import deque
 from typing import Dict
 import numpy as np
+<<<<<<< HEAD
 import pandas as pd
 import shap
+=======
+>>>>>>> 1b66e2611a7da80b22ca584c9ed61b52a13ac01e
 import joblib
 import requests
 import uvicorn
 
 NODE_API = "http://localhost:3001"
 
-# === HRV 스트레스 번들 로드 ===
+=======
+# === HRV ML 모델 로드 ===
+>>>>>>> 1b66e2611a7da80b22ca584c9ed61b52a13ac01e
 try:
     bundle = joblib.load('mental/MentalLog/python/stress_bundle.pkl')
 except:
     bundle = None
 
-def predict_stress(hr, rmssd, pnn50, sd1):
-    if bundle is None:
-        return None
-    input_df = pd.DataFrame([{'HR': hr, 'RMSSD': rmssd, 'pNN50': pnn50, 'SD1': sd1}])
-    shap_vals = bundle['explainer'].shap_values(input_df)
-    shap_pct = np.abs(shap_vals[0, :, 1]) / np.abs(shap_vals[0, :, 1]).sum()
-    input_norm = bundle['scaler'].transform(input_df)[0]
-    return round((input_norm * shap_pct).sum() * 100, 1)
 
+=======
+>>>>>>> 1b66e2611a7da80b22ca584c9ed61b52a13ac01e
 # === FastAPI 앱 설정 ===
 app = FastAPI()
 
@@ -111,6 +110,7 @@ class MetricsBuffer:
         }
 
         # ML 모델 실행 (1분마다 모은 데이터를 모델에 집어넣는 코드)
+<<<<<<< HEAD
         try:
             score = predict_stress(
                 metrics_summary["hr_mean"],
@@ -122,6 +122,20 @@ class MetricsBuffer:
                 metrics_summary["ml_prediction"] = score
         except Exception as e:
             metrics_summary["ml_error"] = str(e)
+=======
+        if ml_model is not None:
+            try:
+                features = np.array([[
+                    metrics_summary["hr_mean"],
+                    metrics_summary["rmssd_mean"],
+                    metrics_summary["pnn50_mean"],
+                    metrics_summary["sd1_mean"],
+                ]])
+                prediction = ml_model.predict(features)[0]
+                metrics_summary["ml_prediction"] = float(prediction)
+            except Exception as e:
+                metrics_summary["ml_error"] = str(e)
+>>>>>>> 1b66e2611a7da80b22ca584c9ed61b52a13ac01e
 
         return metrics_summary
 
