@@ -1,7 +1,8 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import json
-from datetime import datetime, timedelta
+import os
+from datetime import datetime
 from collections import deque
 import numpy as np
 from typing import Dict
@@ -10,8 +11,6 @@ import io
 import librosa
 import uvicorn
 import requests
-import json
-import os
 from dotenv import load_dotenv
 
 NODE_API = "http://localhost:3001"
@@ -31,43 +30,6 @@ except Exception as e:
     print(f"음성 모델 로드 실패 (파일 경로를 확인하세요): {e}")
     voice_model = None
     voice_le = None
-
-# == 네이버 STT 기능 ==
-@app.post("/api/analyze-voice")
-async def analyze_voice(audio_file: UploadFile = File(...)):
-    try:
-        # 1. 파일 읽기
-        contents = await audio_file.read()
-        
-        # 2. [기존 기능] 자체 AI 모델로 스트레스 분석
-        y, sr = librosa.load(io.BytesIO(contents), sr=None, duration=3.0)
-        mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-        mfccs_scaled = np.mean(mfccs.T, axis=0).reshape(1, -1)
-        stress_result = voice_le.inverse_transform(voice_model.predict(mfccs_scaled))[0]
-
-        # 3. [신규 기능] 네이버 API로 음성을 텍스트로 변환(STT)
-        headers = {
-            "X-CLOVASPEECH-API-KEY": os.getenv("NCP_CLOVA_SPEECH_SECRET_KEY")
-        }
-        # 네이버 클로바 스피치 규격에 맞춘 데이터 포장
-        files = {
-            'media': contents,
-            'params': (None, json.dumps({"language": "ko-KR", "completion": "sync"}), 'application/json')
-        }
-        
-        stt_response = requests.post(os.getenv("NCP_CLOVA_SPEECH_URL"), headers=headers, files=files)
-        stt_result = stt_response.json().get('text', '인식 실패')
-
-        # 4. 분석 결과와 텍스트 자막을 한꺼번에 반환!
-        return {
-            "status": "success",
-            "stress": stress_result,
-            "transcript": stt_result
-        }
-        
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
 
 # === FastAPI 앱 설정 ===
 app = FastAPI()
@@ -261,34 +223,41 @@ async def health_check():
         "buffer_size": len(metrics_buffer.rmssd_buffer)
     }
 
-# === 실시간 음성 스트레스 분석 API ===
+# === 실시간 음성 스트레스 분석 API (자체 ML + 네이버 STT) ===
 @app.post("/api/analyze-voice")
 async def analyze_voice(audio_file: UploadFile = File(...)):
-    """
-    프론트엔드에서 녹음된 음성 파일을 받아 스트레스 수치를 분석합니다.
-    """
     if voice_model is None or voice_le is None:
         return {"status": "error", "message": "음성 모델이 로드되지 않았습니다."}
-        
+
     try:
         # 1. 파일 읽기
         contents = await audio_file.read()
-        
-        # 2. 특징 추출 (학습할 때와 동일하게 3초, 40개 MFCC 사용)
+
+        # 2. 자체 AI 모델로 스트레스 분석
         y, sr = librosa.load(io.BytesIO(contents), sr=None, duration=3.0)
         mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
         mfccs_scaled = np.mean(mfccs.T, axis=0).reshape(1, -1)
-        
-        # 3. 모델 예측 및 번역
-        prediction_num = voice_model.predict(mfccs_scaled)
-        predicted_status = voice_le.inverse_transform(prediction_num)[0]
-        
+        stress_result = voice_le.inverse_transform(voice_model.predict(mfccs_scaled))[0]
+
+        # 3. 네이버 클로바 STT로 텍스트 변환
+        stt_result = "인식 실패"
+        try:
+            headers = {"X-CLOVASPEECH-API-KEY": os.getenv("NCP_CLOVA_SPEECH_SECRET_KEY")}
+            files = {
+                'media': contents,
+                'params': (None, json.dumps({"language": "ko-KR", "completion": "sync"}), 'application/json')
+            }
+            stt_response = requests.post(os.getenv("NCP_CLOVA_SPEECH_URL"), headers=headers, files=files, timeout=5)
+            stt_result = stt_response.json().get('text', '인식 실패')
+        except Exception:
+            pass
+
         return {
             "status": "success",
-            "filename": audio_file.filename,
-            "result": predicted_status
+            "stress": stress_result,
+            "transcript": stt_result
         }
-        
+
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
