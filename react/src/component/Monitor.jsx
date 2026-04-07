@@ -11,11 +11,18 @@ import { circleClass } from '../utils/stressUtils'
 const API = 'http://localhost:3001'
 const PYTHON_API = 'http://localhost:8000'
 
-// 가중치 파라미터 (조절 가능)
+// 가중치 파라미터
 const WEIGHTS = {
-  hrv: 0.5,           // HRV 스트레스 가중치
-  voice: 0.2,         // 음성 스트레스 가중치 (모델 학습 완료 후 연결)
-  questionnaire: 0.3, // 문진(PSS) 스트레스 가중치
+  hrv:   0.486,  // 심전도(HRV) 48.6%
+  voice: 0.333,  // 음성(Voice) 33.3%
+  pss:   0.181,  // 문진(PSS)   18.1%
+}
+
+// 가중 합산 스트레스 계산 (분당 호출)
+// hrv: 0~100, voice: 0~100, pss: 0~40 → 정규화 후 가중합
+function calcTotalStress(hrv, voice, pss) {
+  const pssNorm = (pss / 40) * 100
+  return Math.round(hrv * WEIGHTS.hrv + voice * WEIGHTS.voice + pssNorm * WEIGHTS.pss)
 }
 
 // RMSSD → 스트레스 변환
@@ -90,14 +97,24 @@ const Monitor = () => {
   // RMSSD 차트 데이터 (Python API)
   const [rmssdData, setRmssdData] = useState([])
 
+  // 1분 베이스라인
+  const [baselineRmssd, setBaselineRmssd] = useState(null)
+  const [baselineReady, setBaselineReady] = useState(false)
+
+  // PSS 입력
+  const [pssInput, setPssInput] = useState('')
+  const [pssSubmitted, setPssSubmitted] = useState(false)
+
   // 스트레스 지수
-  const [avgStress, setAvgStress] = useState(38)   // HRV 기반 실시간 평균
-  const [peakStress, setPeakStress] = useState(0)  // HRV 기반 세션 내 최고값
-  const [threshold, setThreshold] = useState(70)   // 문진(PSS) 기반 임계치
-  const [pssScore, setPssScore] = useState(0)       // 문진(PSS) 스트레스 점수
-  const voiceStress = 0                             // 음성 스트레스 (모델 학습 완료 전 placeholder)
+  const [threshold, setThreshold] = useState(null) // RMSSD 기반 임계치 (ms)
+  const [pssScore, setPssScore] = useState(0)       // 문진(PSS) 점수 (0~40)
+  const voiceStress = 0                             // 음성 스트레스 placeholder (0~100)
   const [hrv, setHrv] = useState(52)
   const [hr, setHr] = useState(72)
+
+  // 분당 총합 스트레스
+  const [totalStress, setTotalStress] = useState(null)   // 분당 평균 (평균 원형)
+  const [peakStress, setPeakStress] = useState(null)     // 세션 최고치 (최고 원형)
 
   // 키워드
   const [keywords, setKeywords] = useState(SAMPLE_KEYWORDS)
@@ -159,13 +176,25 @@ const Monitor = () => {
           })
         }
 
-        // ML 결과: hr_mean/hr_max는 심박수(bpm) 값이므로 스트레스 원형에 직접 사용하지 않음
+        // 1분 베이스라인 수신
+        if (data.baseline_ready && data.baseline_rmssd && !baselineReady) {
+          setBaselineRmssd(data.baseline_rmssd)
+          setBaselineReady(true)
+        }
+
+        // 분당 총합 스트레스 갱신
+        if (data.ml_triggered && data.ml_result?.ml_prediction != null) {
+          const hrvStress = Math.max(0, Math.min(100, data.ml_result.ml_prediction))
+          const total = calcTotalStress(hrvStress, voiceStress, pssScore)
+          setTotalStress(total)
+          setPeakStress(prev => (prev === null || total > prev) ? total : prev)
+        }
       } catch (e) {}
     }, 2000)
     return () => clearInterval(interval)
   }, [sessionActive])
 
-  // ── RMSSD 시뮬레이션 ──
+  // ── RMSSD 시뮬레이션 (HRV/HR 표시용) ──
   useEffect(() => {
     if (!sessionActive) return
     rmssdRef.current = setInterval(() => {
@@ -173,12 +202,19 @@ const Monitor = () => {
       const val = Math.round(baseRef.current * 10) / 10
       setHrv(Math.round(val))
       setHr(prev => Math.max(60, Math.min(120, prev + Math.round((Math.random() - 0.5) * 3))))
-      const stress = rmssdToStress(val)
-      setAvgStress(prev => Math.round(prev * 0.9 + stress * 0.1))
-      setPeakStress(prev => Math.max(prev, stress))
     }, 1000)
     return () => clearInterval(rmssdRef.current)
   }, [sessionActive])
+
+  // ── PSS 임계치 계산 ──
+  const handlePssSubmit = () => {
+    const pss = Number(pssInput)
+    if (pss < 0 || pss > 40 || !baselineRmssd) return
+    const margin = 0.439 - (pss / 40) * 0.291
+    const newThreshold = Math.round(baselineRmssd * (1 - margin) * 10) / 10
+    setThreshold(newThreshold)
+    setPssSubmitted(true)
+  }
 
   // ── 환자 전환 ──
   const goPrev = () => {
@@ -197,12 +233,9 @@ const Monitor = () => {
     navigate(`/monitor/${p.pat_id}`)
   }
 
-  // 가중 평균: HRV 50% + 음성 20%(placeholder 0) + 문진(PSS) 30%
-  const weightedAvg = Math.round(
-    avgStress * WEIGHTS.hrv +
-    voiceStress * WEIGHTS.voice +
-    pssScore * WEIGHTS.questionnaire
-  )
+  // 현재 RMSSD (차트 최신값), 임계치 초과 여부 (RMSSD < threshold → 스트레스 과다)
+  const currentRmssd = rmssdData.length > 0 ? rmssdData[rmssdData.length - 1].value : null
+  const isOverThreshold = pssSubmitted && threshold !== null && currentRmssd !== null && currentRmssd < threshold
 
   // ── 저장 ──
   const handleSave = async () => {
@@ -214,8 +247,8 @@ const Monitor = () => {
       await axios.post(`${API}/api/notes`, {
         pat_id: patient?.pat_id,
         notes,
-        stress_total: weightedAvg,  // HRV+음성+문진 가중 평균
-        stress_peak: peakStress,    // HRV 세션 내 최고값
+        stress_total: totalStress ?? 0,
+        stress_peak: peakStress ?? 0,
       })
     } catch (e) {}
   }
@@ -286,25 +319,55 @@ const Monitor = () => {
                   ? `${new Date().getFullYear() - new Date(patient.pat_birth).getFullYear()}세`
                   : '–'} / {patient?.pat_gender} / 환자번호 {patient?.pat_id}
               </div>
+
+              {/* PSS 입력 & 임계치 설정 */}
+              {!pssSubmitted ? (
+                <div className="pss-input-section">
+                  <span className="pss-label">PSS 점수 (0~40)</span>
+                  <div className="pss-row">
+                    <input
+                      type="number" min="0" max="40"
+                      value={pssInput}
+                      onChange={e => setPssInput(e.target.value)}
+                      placeholder="0~40"
+                      className="pss-input"
+                    />
+                    <button
+                      className="pss-btn"
+                      onClick={handlePssSubmit}
+                      disabled={!baselineReady || pssInput === ''}
+                    >
+                      {baselineReady ? '임계치 설정' : '베이스라인 측정 중…'}
+                    </button>
+                  </div>
+                  {!baselineReady && (
+                    <div className="pss-hint">환자 입실 후 1분간 RMSSD 측정 중입니다</div>
+                  )}
+                </div>
+              ) : (
+                <div className="pss-result">
+                  PSS {pssInput}점 · 베이스라인 {baselineRmssd} ms · 임계치 {threshold} ms
+                </div>
+              )}
             </div>
 
             {/* 스트레스 원형 3개 */}
             <div className="stress-circles-section">
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(weightedAvg)}`}>
-                  <span className="num">{weightedAvg}</span>
+                <div className={`stress-circle-ring ${totalStress !== null ? circleClass(totalStress) : 'c-green'}`}>
+                  <span className="num">{totalStress ?? '–'}</span>
                 </div>
                 <span className="stress-circle-label">평균</span>
               </div>
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(peakStress)}`}>
-                  <span className="num">{peakStress}</span>
+                <div className={`stress-circle-ring ${peakStress !== null ? circleClass(peakStress) : 'c-green'}`}>
+                  <span className="num">{peakStress ?? '–'}</span>
                 </div>
                 <span className="stress-circle-label">최고</span>
               </div>
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(threshold)}`}>
-                  <span className="num">{threshold}</span>
+                <div className={`stress-circle-ring c-orange`}>
+                  <span className="num">{threshold ?? '–'}</span>
                 </div>
                 <span className="stress-circle-label">임계치</span>
               </div>
@@ -343,7 +406,7 @@ const Monitor = () => {
                 <>
                   <div className="keywords-section-header">
                     <span>{isSaved ? '주요 키워드' : '실시간 키워드 분석'}</span>
-                    {weightedAvg > threshold && (
+                    {isOverThreshold && (
                       <span style={{ fontSize: 10, color: '#E07800', background: '#FFF3E0', padding: '1px 6px', borderRadius: 3, border: '1px solid #FFD180' }}>
                         임계치 초과
                       </span>
@@ -413,13 +476,16 @@ const Monitor = () => {
                       axisLine={false}
                     />
                     <Tooltip content={<GraphTooltip />} />
-                    {/* 임계치 기준선 (빨간 가로선) */}
-                    <ReferenceLine
-                      y={rmssdToStress(threshold) > 0 ? 65 - rmssdToStress(threshold) * 0.45 : 35}
-                      stroke="#E53935"
-                      strokeWidth={1.5}
-                      strokeDasharray="0"
-                    />
+                    {/* 임계치 기준선 (빨간 가로선) - RMSSD ms 단위 */}
+                    {threshold !== null && (
+                      <ReferenceLine
+                        y={threshold}
+                        stroke="#E53935"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 2"
+                        label={{ value: `임계치 ${threshold}ms`, position: 'insideTopRight', fontSize: 10, fill: '#E53935' }}
+                      />
+                    )}
                     <Line
                       type="monotone"
                       dataKey="value"

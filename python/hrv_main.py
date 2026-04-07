@@ -69,12 +69,25 @@ class MetricsBuffer:
         self.pnn50_buffer = deque(maxlen=window_size)
         self.sd1_buffer   = deque(maxlen=window_size)
         self.last_ml_run  = None
+        # 1분 베이스라인
+        self.baseline_start  = None
+        self.baseline_values = []
+        self.baseline_rmssd  = None   # 확정되면 float 값
 
     def add_metrics(self, hr: float, rmssd: float, pnn50: float, sd1: float):
         self.hr_buffer.append(hr)
         self.rmssd_buffer.append(rmssd)
         self.pnn50_buffer.append(pnn50)
         self.sd1_buffer.append(sd1)
+        # 베이스라인 수집 (최초 60초)
+        if self.baseline_rmssd is None:
+            if self.baseline_start is None:
+                self.baseline_start = datetime.now()
+            elapsed = (datetime.now() - self.baseline_start).total_seconds()
+            if elapsed < 60:
+                self.baseline_values.append(rmssd)
+            elif self.baseline_values:
+                self.baseline_rmssd = round(float(np.mean(self.baseline_values)), 2)
 
     def should_run_ml(self, current_time: datetime) -> bool:
         current_minute_key = (current_time.hour, current_time.minute)
@@ -102,17 +115,20 @@ class MetricsBuffer:
         }
 
         # ML 모델 실행 (1분마다 모은 데이터를 모델에 집어넣는 코드)
-
-        if ml_model is not None:
+        if bundle is not None:
             try:
-                features = np.array([[
-                    metrics_summary["hr_mean"],
-                    metrics_summary["rmssd_mean"],
-                    metrics_summary["pnn50_mean"],
-                    metrics_summary["sd1_mean"],
-                ]])
-                prediction = ml_model.predict(features)[0]
-                metrics_summary["ml_prediction"] = float(prediction)
+                import pandas as pd
+                input_df = pd.DataFrame([{
+                    'HR':    metrics_summary["hr_mean"],
+                    'RMSSD': metrics_summary["rmssd_mean"],
+                    'pNN50': metrics_summary["pnn50_mean"],
+                    'SD1':   metrics_summary["sd1_mean"],
+                }])
+                shap_vals = bundle['explainer'].shap_values(input_df)
+                shap_pct  = np.abs(shap_vals[0, :, 1]) / np.abs(shap_vals[0, :, 1]).sum()
+                input_norm = bundle['scaler'].transform(input_df)[0]
+                score = round((input_norm * shap_pct).sum() * 100, 1)
+                metrics_summary["ml_prediction"] = float(score)
             except Exception as e:
                 metrics_summary["ml_error"] = str(e)
 
@@ -144,6 +160,8 @@ async def generate_metrics_for_time(request: Dict):
             "realtime_rmssd": [],
             "ml_triggered":   False,
             "ml_result":      None,
+            "baseline_ready": metrics_buffer.baseline_rmssd is not None,
+            "baseline_rmssd": metrics_buffer.baseline_rmssd,
         }
 
         # 데이터포인트 생성
