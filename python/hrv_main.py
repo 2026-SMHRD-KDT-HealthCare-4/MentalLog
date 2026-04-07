@@ -5,28 +5,20 @@ from datetime import datetime
 from collections import deque
 from typing import Dict
 import numpy as np
-<<<<<<< HEAD
-import pandas as pd
-import shap
-=======
->>>>>>> 1b66e2611a7da80b22ca584c9ed61b52a13ac01e
 import joblib
 import requests
 import uvicorn
 
 NODE_API = "http://localhost:3001"
 
-=======
+
 # === HRV ML 모델 로드 ===
->>>>>>> 1b66e2611a7da80b22ca584c9ed61b52a13ac01e
 try:
     bundle = joblib.load('mental/MentalLog/python/stress_bundle.pkl')
 except:
     bundle = None
 
 
-=======
->>>>>>> 1b66e2611a7da80b22ca584c9ed61b52a13ac01e
 # === FastAPI 앱 설정 ===
 app = FastAPI()
 
@@ -110,19 +102,7 @@ class MetricsBuffer:
         }
 
         # ML 모델 실행 (1분마다 모은 데이터를 모델에 집어넣는 코드)
-<<<<<<< HEAD
-        try:
-            score = predict_stress(
-                metrics_summary["hr_mean"],
-                metrics_summary["rmssd_mean"],
-                metrics_summary["pnn50_mean"],
-                metrics_summary["sd1_mean"],
-            )
-            if score is not None:
-                metrics_summary["ml_prediction"] = score
-        except Exception as e:
-            metrics_summary["ml_error"] = str(e)
-=======
+
         if ml_model is not None:
             try:
                 features = np.array([[
@@ -135,7 +115,6 @@ class MetricsBuffer:
                 metrics_summary["ml_prediction"] = float(prediction)
             except Exception as e:
                 metrics_summary["ml_error"] = str(e)
->>>>>>> 1b66e2611a7da80b22ca584c9ed61b52a13ac01e
 
         return metrics_summary
 
