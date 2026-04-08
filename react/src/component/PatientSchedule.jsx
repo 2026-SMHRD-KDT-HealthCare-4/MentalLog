@@ -30,11 +30,6 @@ const SCHEDULE_DATA = {
   ],
 }
 
-const HISTORY_DATA = {
-  this_week: ['김할머니', '김할아버지', '왕할머니', '누구누구할아버지', '할아버지망나뇽'],
-  one_week:  ['김할머니', '김할아버지', '왕할머니', '누구누구할아버지', '할아버지망나뇽...'],
-  one_month: ['김할머니', '김할아버지', '왕할머니', '누구누구할아버지', '할아버지망나뇽'],
-}
 
 const PAT_ID_MAP = {
   '김망나뇽': 'P001', '박망나뇽': 'P002', '최망나뇽': 'P003',
@@ -70,6 +65,18 @@ const PatientSchedule = () => {
   const [showDrop, setShowDrop] = useState(false)
   const searchRef = useRef(null)
 
+  const doctor = JSON.parse(sessionStorage.getItem('doctor') || '{}')
+  const docInitial = doctor.doc_name ? doctor.doc_name[0] : '의'
+
+  // DB에서 최근 진료 완료 환자 히스토리 조회
+  const [historyPatients, setHistoryPatients] = useState({ this_week: [], one_week: [], one_month: [] })
+
+  useEffect(() => {
+    axios.get(`${API}/api/recent-visits`).then(res => {
+      setHistoryPatients(res.data)
+    }).catch(() => {})
+  }, [])
+
   const allPatients = [...new Set([
     ...SCHEDULE_DATA.scheduled.map(p => p.name),
     ...SCHEDULE_DATA.reserved.map(p => p.name),
@@ -91,7 +98,13 @@ const PatientSchedule = () => {
 
   return (
     <div className="schedule-page" onClick={() => setShowDrop(false)}>
-      <div className="schedule-brand">MentalLog</div>
+      <div className="schedule-topbar">
+        <div className="schedule-brand">MentalLog</div>
+        <div className="nav-user-area" onClick={() => navigate('/profile')}>
+          <span className="nav-user-label">User</span>
+          <button className="nav-user-btn">{docInitial}</button>
+        </div>
+      </div>
 
       {/* 검색 바 */}
       <div className="schedule-search-row" onClick={e => e.stopPropagation()}>
@@ -152,30 +165,25 @@ const PatientSchedule = () => {
         {/* 과거 진료기록 사이드바 */}
         <div className="history-sidebar">
           <div className="history-sidebar-header">과거 진료기록</div>
-          <div className="history-group">
-            <div className="history-group-title">이번 주</div>
-            {HISTORY_DATA.this_week.map((name, i) => (
-              <div key={i} className="history-patient-item" onClick={() => handlePatientClick(name)}>
-                {name}
-              </div>
-            ))}
-          </div>
-          <div className="history-group">
-            <div className="history-group-title">1주 전</div>
-            {HISTORY_DATA.one_week.map((name, i) => (
-              <div key={i} className="history-patient-item" onClick={() => handlePatientClick(name)}>
-                {name}
-              </div>
-            ))}
-          </div>
-          <div className="history-group">
-            <div className="history-group-title">1달 전</div>
-            {HISTORY_DATA.one_month.map((name, i) => (
-              <div key={i} className="history-patient-item" onClick={() => handlePatientClick(name)}>
-                {name}
-              </div>
-            ))}
-          </div>
+          {[
+            { label: '이번 주', key: 'this_week' },
+            { label: '1주 전',  key: 'one_week' },
+            { label: '1달 전',  key: 'one_month' },
+          ].map(({ label, key }) => (
+            <div className="history-group" key={key}>
+              <div className="history-group-title">{label}</div>
+              {historyPatients[key].length === 0 ? (
+                <div style={{ fontSize: 12, color: '#BBB', padding: '4px 0' }}>없음</div>
+              ) : historyPatients[key].map((p, i) => (
+                <div key={i} className="history-patient-item"
+                  onClick={() => navigate(`/report/${p.pat_id}?noteId=${p.note_id}`)}
+                >
+                  <span>{p.pat_name}</span>
+                  <span style={{ fontSize: 10, color: '#AAA', float: 'right' }}>{p.visit_date}</span>
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
       </div>
     </div>

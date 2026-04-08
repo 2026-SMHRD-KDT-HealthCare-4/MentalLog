@@ -4,13 +4,17 @@ import PatientSchedule from './component/PatientSchedule'
 import Report         from './component/Report'
 import Join           from './component/Join'
 import Login          from './component/Login'
+import DoctorProfile     from './component/DoctorProfile'
+import DoctorProfileEdit from './component/DoctorProfileEdit'
 
 function App() {
   return (
     <Routes>
       {/* 인증 */}
-      <Route path="/join"  element={<Join />} />
-      <Route path="/login" element={<Login />} />
+      <Route path="/join"    element={<Join />} />
+      <Route path="/login"   element={<Login />} />
+      <Route path="/profile"      element={<DoctorProfile />} />
+      <Route path="/profile/edit" element={<DoctorProfileEdit />} />
 
       {/* 환자 스케줄 / 검색 */}
       <Route path="/schedule" element={<PatientSchedule />} />

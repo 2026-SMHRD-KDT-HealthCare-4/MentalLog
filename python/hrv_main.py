@@ -186,7 +186,7 @@ async def generate_metrics_for_time(request: Dict):
         second      = request.get("second", 0)
         data_points = request.get("data_points", 100)
         pat_id      = request.get("pat_id", None)
-        session_id  = request.get("session_id", None)
+        session_id  = request.get("session_id", None)   # BIGINT (Date.now() from React)
 
         timestamp = datetime.now().replace(hour=hour, minute=minute, second=second, microsecond=0)
 
@@ -210,15 +210,19 @@ async def generate_metrics_for_time(request: Dict):
             results["data_generated"] += 1
             results["realtime_rmssd"].append(round(metrics["rmssd"], 2))
 
-        # RMSSD → Node DB 저장
-        if pat_id:
-            for rmssd_val in results["realtime_rmssd"]:
-                try:
-                    requests.post(f"{NODE_API}/api/rmssd", json={
-                        "pat_id": pat_id, "session_id": session_id, "rmssd_value": rmssd_val,
-                    }, timeout=2)
-                except Exception:
-                    pass
+        # HRV → Node DB 저장 (세션 ID 있을 때만, 매 포인트 저장은 부하 큼 → 마지막 값만 저장)
+        if pat_id and session_id:
+            last_metrics = dummy_generator.generate_metrics_for_timestamp()
+            try:
+                requests.post(f"{NODE_API}/api/rmssd", json={
+                    "session_id": int(session_id),
+                    "hr_val":     round(last_metrics["hr"]),
+                    "rmssd_val":  round(last_metrics["rmssd"]),
+                    "pnn50_val":  round(last_metrics["pnn50"]),
+                    "sd1_val":    round(last_metrics["sd1"]),
+                }, timeout=2)
+            except Exception:
+                pass
 
         # 분이 바뀔 때 ML 실행 (베이스라인 완료 후에만)
         if metrics_buffer.baseline_rmssd is not None and metrics_buffer.should_run_ml(timestamp):
@@ -226,19 +230,8 @@ async def generate_metrics_for_time(request: Dict):
             results["ml_triggered"] = True
             results["ml_result"]    = ml_result
 
-            # ML 결과 → Node DB 저장
-            if pat_id:
-                try:
-                    requests.post(f"{NODE_API}/api/stress", json={
-                        "pat_id":               pat_id,
-                        "session_id":           session_id,
-                        "hrv_stress":           ml_result.get("ml_prediction", 0),
-                        "voice_stress":         0,
-                        "questionnaire_stress": 0,
-                        "total_stress":         ml_result.get("ml_prediction", 0),
-                    }, timeout=2)
-                except Exception:
-                    pass
+            # ML 결과 로그 (별도 저장 테이블 없음)
+            pass
 
         return results
 
