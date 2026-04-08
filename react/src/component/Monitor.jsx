@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -23,12 +23,6 @@ const WEIGHTS = {
 function calcTotalStress(hrv, voice, pss) {
   const pssNorm = (pss / 40) * 100
   return Math.round(hrv * WEIGHTS.hrv + voice * WEIGHTS.voice + pssNorm * WEIGHTS.pss)
-}
-
-// RMSSD → 스트레스 변환
-function rmssdToStress(rmssd) {
-  const c = Math.max(5, Math.min(100, rmssd))
-  return Math.round(100 - ((c - 5) / 95) * 100)
 }
 
 // 툴팁
@@ -91,8 +85,8 @@ const Monitor = () => {
 
   // RMSSD 데이터
   const [sessionActive, setSessionActive] = useState(true)
-  const rmssdRef = useRef(null)
-  const baseRef = useRef(45)
+  const lastHrvStressRef = useRef(0)  // 마지막 ML HRV 스트레스값 보관 (PSS 즉시 반영용)
+  const pssScoreRef = useRef(0)       // pssScore ref (폴링 클로저 stale 방지)
 
   // RMSSD 차트 데이터 (Python API)
   const [rmssdData, setRmssdData] = useState([])
@@ -107,7 +101,6 @@ const Monitor = () => {
 
   // 스트레스 지수
   const [threshold, setThreshold] = useState(null) // RMSSD 기반 임계치 (ms)
-  const [pssScore, setPssScore] = useState(0)       // 문진(PSS) 점수 (0~40)
   const voiceStress = 0                             // 음성 스트레스 placeholder (0~100)
   const [hrv, setHrv] = useState(52)
   const [hr, setHr] = useState(72)
@@ -123,6 +116,13 @@ const Monitor = () => {
 
   // 의사 소견
   const [notes, setNotes] = useState('')
+
+  // ── 환자 입실 시 베이스라인 리셋 ──
+  useEffect(() => {
+    axios.post(`${PYTHON_API}/reset-baseline`).catch(() => {})
+    setBaselineRmssd(null)
+    setBaselineReady(false)
+  }, [patientId])
 
   // ── 환자 로드 ──
   useEffect(() => {
@@ -142,7 +142,7 @@ const Monitor = () => {
       })
       if (notesRes.data?.notes) setNotes(notesRes.data.notes)
       if (qRes.data) {
-        setPssScore(qRes.data.stress_score || 0)
+        pssScoreRef.current = qRes.data.stress_score || 0
         setThreshold(qRes.data.threshold || 70)
       }
     })
@@ -158,7 +158,7 @@ const Monitor = () => {
           hour: now.getHours(),
           minute: now.getMinutes(),
           second: now.getSeconds(),
-          data_points: 10,
+          data_points: 1,
           pat_id: patient?.pat_id,
           session_id: `${patient?.pat_id}_${now.toISOString().slice(0, 10)}`,
         })
@@ -174,6 +174,9 @@ const Monitor = () => {
             const next = [...prev, ...newPoints]
             return next.length > 100 ? next.slice(-100) : next
           })
+          // HRV 박스: 최신 RMSSD 값으로 실시간 갱신
+          const latestRmssd = data.realtime_rmssd[data.realtime_rmssd.length - 1]
+          if (latestRmssd != null) setHrv(Math.round(latestRmssd))
         }
 
         // 1분 베이스라인 수신
@@ -182,38 +185,38 @@ const Monitor = () => {
           setBaselineReady(true)
         }
 
-        // 분당 총합 스트레스 갱신
-        if (data.ml_triggered && data.ml_result?.ml_prediction != null) {
-          const hrvStress = Math.max(0, Math.min(100, data.ml_result.ml_prediction))
-          const total = calcTotalStress(hrvStress, voiceStress, pssScore)
-          setTotalStress(total)
-          setPeakStress(prev => (prev === null || total > prev) ? total : prev)
+        // 분당 총합 스트레스 갱신 + HR 박스 업데이트
+        if (data.ml_triggered && data.ml_result) {
+          if (data.ml_result.hr_mean != null)
+            setHr(Math.round(data.ml_result.hr_mean))
+
+          if (data.ml_result.ml_prediction != null) {
+            const hrvStress = Math.max(0, Math.min(100, data.ml_result.ml_prediction))
+            lastHrvStressRef.current = hrvStress
+            const total = calcTotalStress(hrvStress, voiceStress, pssScoreRef.current)
+            setTotalStress(total)
+            setPeakStress(prev => (prev === null || total > prev) ? total : prev)
+          }
         }
       } catch (e) {}
-    }, 2000)
+    }, 1000)
     return () => clearInterval(interval)
   }, [sessionActive])
 
-  // ── RMSSD 시뮬레이션 (HRV/HR 표시용) ──
-  useEffect(() => {
-    if (!sessionActive) return
-    rmssdRef.current = setInterval(() => {
-      baseRef.current = Math.max(15, Math.min(80, baseRef.current + (Math.random() - 0.5) * 7))
-      const val = Math.round(baseRef.current * 10) / 10
-      setHrv(Math.round(val))
-      setHr(prev => Math.max(60, Math.min(120, prev + Math.round((Math.random() - 0.5) * 3))))
-    }, 1000)
-    return () => clearInterval(rmssdRef.current)
-  }, [sessionActive])
 
-  // ── PSS 임계치 계산 ──
+  // ── PSS 임계치 계산 + 즉시 원형 반영 ──
   const handlePssSubmit = () => {
     const pss = Number(pssInput)
     if (pss < 0 || pss > 40 || !baselineRmssd) return
     const margin = 0.439 - (pss / 40) * 0.291
     const newThreshold = Math.round(baselineRmssd * (1 - margin) * 10) / 10
     setThreshold(newThreshold)
+    pssScoreRef.current = pss
     setPssSubmitted(true)
+    // 마지막 HRV 스트레스값 + 새 PSS로 즉시 총합 계산
+    const total = calcTotalStress(lastHrvStressRef.current, voiceStress, pss)
+    setTotalStress(total)
+    setPeakStress(prev => (prev === null || total > prev) ? total : prev)
   }
 
   // ── 환자 전환 ──
@@ -320,7 +323,14 @@ const Monitor = () => {
                   : '–'} / {patient?.pat_gender} / 환자번호 {patient?.pat_id}
               </div>
 
-              {/* PSS 입력 & 임계치 설정 */}
+              {/* 베이스라인 상태 (항상 표시) */}
+              <div className={`baseline-status ${baselineReady ? 'ready' : 'measuring'}`}>
+                {baselineReady
+                  ? `✓ 베이스라인 완료: ${baselineRmssd} ms`
+                  : '⏳ 베이스라인 측정 중 (1분)...'}
+              </div>
+
+              {/* PSS 입력 (제출 전) */}
               {!pssSubmitted ? (
                 <div className="pss-input-section">
                   <span className="pss-label">PSS 점수 (0~40)</span>
@@ -337,16 +347,17 @@ const Monitor = () => {
                       onClick={handlePssSubmit}
                       disabled={!baselineReady || pssInput === ''}
                     >
-                      {baselineReady ? '임계치 설정' : '베이스라인 측정 중…'}
+                      임계치 설정
                     </button>
                   </div>
                   {!baselineReady && (
-                    <div className="pss-hint">환자 입실 후 1분간 RMSSD 측정 중입니다</div>
+                    <div className="pss-hint">베이스라인 완료 후 임계치 설정 가능합니다</div>
                   )}
                 </div>
               ) : (
+                /* PSS 제출 결과 */
                 <div className="pss-result">
-                  PSS {pssInput}점 · 베이스라인 {baselineRmssd} ms · 임계치 {threshold} ms
+                  PSS {pssInput}점 → 임계치 {threshold} ms
                 </div>
               )}
             </div>
