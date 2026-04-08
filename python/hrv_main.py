@@ -165,15 +165,14 @@ async def generate_metrics_for_time(request: Dict):
         }
 
         # 데이터포인트 생성
-        for i in range(data_points):
+        for _ in range(data_points):
             metrics = dummy_generator.generate_metrics_for_timestamp(timestamp)
             metrics_buffer.add_metrics(
                 hr=metrics["hr"], rmssd=metrics["rmssd"],
                 pnn50=metrics["pnn50"], sd1=metrics["sd1"],
             )
             results["data_generated"] += 1
-            if i >= data_points - 10:
-                results["realtime_rmssd"].append(round(metrics["rmssd"], 2))
+            results["realtime_rmssd"].append(round(metrics["rmssd"], 2))
 
         # RMSSD → Node DB 저장
         if pat_id:
@@ -209,6 +208,14 @@ async def generate_metrics_for_time(request: Dict):
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@app.post("/reset-baseline")
+async def reset_baseline():
+    metrics_buffer.baseline_start  = None
+    metrics_buffer.baseline_values = []
+    metrics_buffer.baseline_rmssd  = None
+    return {"status": "ok", "message": "베이스라인 초기화 완료"}
 
 
 @app.get("/health")
