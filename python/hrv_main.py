@@ -32,33 +32,57 @@ app.add_middleware(
 
 # === 더미 데이터 생성기 === 여기는 있는 데이터 가지고 수정할 부분
 class DummyDataGenerator:
-    """시계열 더미 데이터 생성"""
+    """
+    상담 세션 시뮬레이션 더미 데이터 생성
+    - 안정기 (0~90초): 높은 RMSSD, 작은 노이즈 (환자 착석/대기)
+    - 변동기 (90초~): RMSSD 점진 하락 + 노이즈 급증 (스트레스 주제 상담)
+    """
     def __init__(self):
-        pass
+        self.session_start = None
 
-    def generate_metrics_for_timestamp(self, timestamp: datetime) -> Dict:
-        """주어진 시점에 대해 더미 데이터 생성"""
-        hour = timestamp.hour
-        minute = timestamp.minute
-        second = timestamp.second
+    def reset(self):
+        self.session_start = None
 
-        # 시간대별 기본값
-        if 6 <= hour < 12:
-            base_hr, base_rmssd, base_pnn50, base_sd1 = 45, 28, 8, 20
-        elif 12 <= hour < 18:
-            base_hr, base_rmssd, base_pnn50, base_sd1 = 55, 35, 15, 25
+    def generate_metrics_for_timestamp(self) -> Dict:
+        now = datetime.now()
+        if self.session_start is None:
+            self.session_start = now
+
+        elapsed = (now - self.session_start).total_seconds()
+
+        if elapsed <= 90:
+            # ── 안정기: 높은 RMSSD, 미세 변동
+            t = elapsed / 90
+            base_hr    = 62 + t * 3
+            base_rmssd = 50 - t * 5          # 50 → 45
+            base_pnn50 = 24 - t * 3
+            base_sd1   = 35 - t * 4
+            noise      = 2.0
         else:
-            base_hr, base_rmssd, base_pnn50, base_sd1 = 65, 42, 22, 30
+            # ── 변동기: RMSSD 급락 + 노이즈 폭증 (3분에 걸쳐 최대치)
+            t = min(1.0, (elapsed - 90) / 180)
+            base_hr    = 65 + t * 30         # 65 → 95
+            base_rmssd = 45 - t * 32         # 45 → 13
+            base_pnn50 = 21 - t * 18         # 21 → 3
+            base_sd1   = 31 - t * 22         # 31 → 9
+            noise      = 6.0 + t * 18.0      # 6 → 24
 
-        # 분/초 단위 미세 변동
-        minute_factor = (minute + second / 60) / 60
-        second_noise = np.sin(second * 0.1) * 5
+        # 심박 특유의 주기적 파동 (빠른 주기 + 느린 주기 혼합)
+        wave = (np.sin(elapsed * 0.8) * 3.0 +
+                np.sin(elapsed * 0.2) * 5.0 +
+                np.sin(elapsed * 2.5) * 1.5)
+
+        # 변동기에만 돌발 스트레스 스파이크 (약 10% 확률)
+        spike = 0.0
+        if elapsed > 90 and np.random.random() < 0.10:
+            spike = np.random.choice([-18, -14, -10, 12, 16],
+                                     p=[0.30, 0.25, 0.20, 0.15, 0.10])
 
         return {
-            "hr":    max(20, base_hr    + minute_factor * 15 + second_noise + np.random.normal(0, 2)),
-            "rmssd": max(10, base_rmssd + minute_factor * 12 + second_noise + np.random.normal(0, 1.5)),
-            "pnn50": max(0,  base_pnn50 + minute_factor * 10 + second_noise + np.random.normal(0, 1)),
-            "sd1":   max(5,  base_sd1   + minute_factor * 8  + second_noise + np.random.normal(0, 1.5)),
+            "hr":    max(20, base_hr    + wave * 0.5 + np.random.normal(0, noise * 0.7)),
+            "rmssd": max(4,  base_rmssd + wave       + spike + np.random.normal(0, noise)),
+            "pnn50": max(0,  base_pnn50              + np.random.normal(0, noise * 0.6)),
+            "sd1":   max(2,  base_sd1   + wave * 0.6 + np.random.normal(0, noise * 0.8)),
         }
 
 # === 글로벌 상태 관리 ===
@@ -128,9 +152,21 @@ class MetricsBuffer:
                 shap_pct  = np.abs(shap_vals[0, :, 1]) / np.abs(shap_vals[0, :, 1]).sum()
                 input_norm = bundle['scaler'].transform(input_df)[0]
                 score = round((input_norm * shap_pct).sum() * 100, 1)
-                metrics_summary["ml_prediction"] = float(score)
+                metrics_summary["ml_prediction"] = float(max(0.0, min(100.0, score)))
             except Exception as e:
                 metrics_summary["ml_error"] = str(e)
+
+        # 번들 없거나 예외 시 RMSSD 기반 폴백 스코어
+        if "ml_prediction" not in metrics_summary:
+            rmssd_mean = metrics_summary["rmssd_mean"]
+            fallback = round(max(0.0, min(100.0, 100 - ((rmssd_mean - 5) / 95) * 100)), 1)
+            metrics_summary["ml_prediction"] = float(fallback)
+
+        # 버퍼 초기화 → 다음 ML 실행은 직전 1분 데이터만 사용
+        self.hr_buffer.clear()
+        self.rmssd_buffer.clear()
+        self.pnn50_buffer.clear()
+        self.sd1_buffer.clear()
 
         return metrics_summary
 
@@ -166,7 +202,7 @@ async def generate_metrics_for_time(request: Dict):
 
         # 데이터포인트 생성
         for _ in range(data_points):
-            metrics = dummy_generator.generate_metrics_for_timestamp(timestamp)
+            metrics = dummy_generator.generate_metrics_for_timestamp()
             metrics_buffer.add_metrics(
                 hr=metrics["hr"], rmssd=metrics["rmssd"],
                 pnn50=metrics["pnn50"], sd1=metrics["sd1"],
@@ -184,8 +220,8 @@ async def generate_metrics_for_time(request: Dict):
                 except Exception:
                     pass
 
-        # 분이 바뀔 때 ML 실행
-        if metrics_buffer.should_run_ml(timestamp):
+        # 분이 바뀔 때 ML 실행 (베이스라인 완료 후에만)
+        if metrics_buffer.baseline_rmssd is not None and metrics_buffer.should_run_ml(timestamp):
             ml_result = metrics_buffer.run_ml_model(timestamp)
             results["ml_triggered"] = True
             results["ml_result"]    = ml_result
@@ -215,6 +251,8 @@ async def reset_baseline():
     metrics_buffer.baseline_start  = None
     metrics_buffer.baseline_values = []
     metrics_buffer.baseline_rmssd  = None
+    metrics_buffer.last_ml_run     = None   # ML 타이머도 초기화 → 즉시 첫 트리거 허용
+    dummy_generator.reset()                 # 더미 세션 타이머 초기화
     return {"status": "ok", "message": "베이스라인 초기화 완료"}
 
 
