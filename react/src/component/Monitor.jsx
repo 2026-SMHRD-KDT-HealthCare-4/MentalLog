@@ -45,25 +45,6 @@ const WAITING_PATIENTS = [
   { pat_id: 'P005', pat_name: '양망나뇽', age: 98, gender: '여', visit_count: 1, has_questionnaire: false },
 ]
 
-const SAMPLE_PRESCRIPTIONS = [
-  {
-    date: '2026/03/01',
-    content: "스트레스 지수 높음\n'가족'이라는 키워드는 높아보임\n다음에 다시 한번 이야기 해보기",
-  },
-  {
-    date: '2026/02/04',
-    content: "너무 걱정되어있음\n눈에 다른 곳을 보고 있음\n스트레스 지수 높음",
-    compare: true,
-  },
-  {
-    date: '2026/01/01',
-    content: "괜찮은것같음\n스트레스 지수 낮음",
-  },
-  {
-    date: '2025/12/26',
-    content: "오늘 하루 이했습니다. 성 생명 뿔리뿔리\n준경이 보임\n극 처방이 필요합동 등\n스트레스 지수 중간",
-  },
-]
 
 const SAMPLE_KEYWORDS = [
   { id: 1, word: '가족', time: '12:35:24', content: "가족들이 뭐 대화도 안되고 머 그래서 힘들어요 → 동의 문장 그런거 출력" },
@@ -85,8 +66,9 @@ const Monitor = () => {
 
   // RMSSD 데이터
   const [sessionActive, setSessionActive] = useState(true)
-  const lastHrvStressRef = useRef(0)  // 마지막 ML HRV 스트레스값 보관 (PSS 즉시 반영용)
-  const pssScoreRef = useRef(0)       // pssScore ref (폴링 클로저 stale 방지)
+  const sessionIdRef = useRef(Date.now())   // 세션 ID (BIGINT, DB session_id)
+  const lastHrvStressRef = useRef(0)        // 마지막 ML HRV 스트레스값 보관 (PSS 즉시 반영용)
+  const pssScoreRef = useRef(0)             // pssScore ref (폴링 클로저 stale 방지)
 
   // RMSSD 차트 데이터 (Python API)
   const [rmssdData, setRmssdData] = useState([])
@@ -109,6 +91,9 @@ const Monitor = () => {
   const [totalStress, setTotalStress] = useState(null)   // 분당 평균 (평균 원형)
   const [peakStress, setPeakStress] = useState(null)     // 세션 최고치 (최고 원형)
 
+  // 과거 처방 내역
+  const [prescriptions, setPrescriptions] = useState([])
+
   // 키워드
   const [keywords, setKeywords] = useState(SAMPLE_KEYWORDS)
   const [selectedKw, setSelectedKw] = useState(null)
@@ -117,9 +102,10 @@ const Monitor = () => {
   // 의사 소견
   const [notes, setNotes] = useState('')
 
-  // ── 환자 입실 시 베이스라인 리셋 ──
+  // ── 환자 입실 시 베이스라인 리셋 + 새 세션 ID 생성 ──
   useEffect(() => {
     axios.post(`${PYTHON_API}/reset-baseline`).catch(() => {})
+    sessionIdRef.current = Date.now()
     setBaselineRmssd(null)
     setBaselineReady(false)
   }, [patientId])
@@ -130,16 +116,38 @@ const Monitor = () => {
     if (idx !== -1) setCurrentPatientIdx(idx)
     const p = WAITING_PATIENTS.find(p => p.pat_id === patientId) || WAITING_PATIENTS[0]
 
+    const fallbackPatient = {
+      pat_id: p.pat_id, pat_name: p.pat_name,
+      birth_date: null, gender: p.gender,
+      med_history: null,
+    }
+
     Promise.all([
       axios.get(`${API}/api/patients/${p.pat_id}`).catch(() => ({ data: null })),
       axios.get(`${API}/api/notes/${p.pat_id}`).catch(() => ({ data: null })),
       axios.get(`${API}/api/questionnaire/${p.pat_id}`).catch(() => ({ data: null })),
-    ]).then(([patRes, notesRes, qRes]) => {
-      setPatient(patRes.data || {
-        pat_id: p.pat_id, pat_name: p.pat_name,
-        pat_birth: '1982-05-14', pat_gender: p.gender,
-        pat_phone: '010-1234-5678', diagnosis: '범불안장애(GAD)',
-      })
+      axios.get(`${API}/api/history/${p.pat_id}`).catch(() => ({ data: [] })),
+    ]).then(async ([patRes, notesRes, qRes, histRes]) => {
+      const patData = patRes.data || fallbackPatient
+      setPatient(patData)
+
+      // 페이지 진입 시 환자 upsert (세션 저장 전에 반드시 존재해야 함)
+      const doctor = JSON.parse(sessionStorage.getItem('doctor') || '{}')
+      await axios.post(`${API}/api/patients`, {
+        pat_id:      patData.pat_id,
+        pat_name:    patData.pat_name,
+        gender:      patData.gender      || null,
+        birth_date:  patData.birth_date  || null,
+        med_history: patData.med_history || null,
+      }).catch(e => console.error('환자 upsert 실패:', e?.response?.data || e?.message))
+
+      const visits = histRes.data || []
+      setPrescriptions(visits.map(v => ({
+        note_id:  v.visit_id,
+        date:     v.visit_date,
+        content:  v.notes || '',
+        stress:   v.stress_total,
+      })))
       if (notesRes.data?.notes) setNotes(notesRes.data.notes)
       if (qRes.data) {
         pssScoreRef.current = qRes.data.stress_score || 0
@@ -160,7 +168,7 @@ const Monitor = () => {
           second: now.getSeconds(),
           data_points: 1,
           pat_id: patient?.pat_id,
-          session_id: `${patient?.pat_id}_${now.toISOString().slice(0, 10)}`,
+          session_id: sessionIdRef.current,
         })
         const data = res.data
 
@@ -248,18 +256,39 @@ const Monitor = () => {
     setIsSaved(true)
     try {
       await axios.post(`${API}/api/notes`, {
-        pat_id: patient?.pat_id,
+        session_id:   sessionIdRef.current,
+        pat_id:       patient?.pat_id,
         notes,
         stress_total: totalStress ?? 0,
-        stress_peak: peakStress ?? 0,
+        stress_peak:  peakStress  ?? 0,
       })
-    } catch (e) {}
+      // 저장 후 처방 내역 갱신
+      const histRes = await axios.get(`${API}/api/history/${patient?.pat_id}`).catch(() => ({ data: [] }))
+      const visits = histRes.data || []
+      setPrescriptions(visits.map(v => ({
+        note_id: v.visit_id,
+        date:    v.visit_date,
+        content: v.notes || '',
+        stress:  v.stress_total,
+      })))
+    } catch (e) {
+      console.error('저장 실패:', e?.response?.data || e?.message || e)
+      alert(`저장 실패: ${e?.response?.data?.detail || e?.response?.data?.error || e?.message || '알 수 없는 오류'}`)
+    }
   }
 
   // ── 진단 완료 → 레포트 ──
   const handleComplete = async () => {
     await handleSave()
-    navigate(`/report/${patient?.pat_id}`)
+    navigate(`/report/${patient?.pat_id}`, {
+      state: {
+        patient,
+        notes,
+        totalStress: totalStress ?? 0,
+        peakStress:  peakStress  ?? 0,
+        threshold:   threshold   ?? 0,
+      }
+    })
   }
 
   const currentPatient = WAITING_PATIENTS[currentPatientIdx]
@@ -271,7 +300,10 @@ const Monitor = () => {
         <div className="nav-controls">
           <button className="nav-icon-btn" onClick={() => navigate('/schedule')}>←</button>
           <button className="nav-icon-btn" onClick={() => window.location.reload()}>↺</button>
-          <span style={{ fontSize: 13, color: '#888', marginLeft: 4, fontFamily: 'Georgia, serif', fontWeight: 600 }}>M</span>
+          <span
+            style={{ fontSize: 13, color: '#888', marginLeft: 4, fontFamily: 'Georgia, serif', fontWeight: 600, cursor: 'pointer' }}
+            onClick={() => navigate('/schedule')}
+          >M</span>
         </div>
 
         {/* << 환자명 >> */}
@@ -300,9 +332,11 @@ const Monitor = () => {
           )}
         </div>
 
-        <div className="nav-user-area">
+        <div className="nav-user-area" onClick={() => navigate('/profile')} style={{ cursor: 'pointer' }}>
           <span className="nav-user-label">User</span>
-          <button className="nav-user-btn">문</button>
+          <button className="nav-user-btn">
+            {(() => { const d = JSON.parse(sessionStorage.getItem('doctor') || '{}'); return d.doc_name?.[0] || '의' })()}
+          </button>
         </div>
       </nav>
 
@@ -318,9 +352,9 @@ const Monitor = () => {
                 환자 : {patient?.pat_name || '...'}
               </div>
               <div className="patient-sub">
-                Age: {patient?.pat_birth
-                  ? `${new Date().getFullYear() - new Date(patient.pat_birth).getFullYear()}세`
-                  : '–'} / {patient?.pat_gender} / 환자번호 {patient?.pat_id}
+                Age: {patient?.birth_date
+                  ? `${new Date().getFullYear() - new Date(patient.birth_date).getFullYear()}세`
+                  : '–'} / {patient?.gender} / 환자번호 {patient?.pat_id}
               </div>
 
               {/* 베이스라인 상태 (항상 표시) */}
@@ -550,11 +584,24 @@ const Monitor = () => {
               <span className="panel-title">과거 처방 내용</span>
             </div>
             <div className="prescription-list">
-              {SAMPLE_PRESCRIPTIONS.map((rx, i) => (
-                <div className="prescription-row" key={i}>
+              {prescriptions.length === 0 ? (
+                <div className="empty-state">저장된 처방 내역이 없습니다</div>
+              ) : prescriptions.map((rx, i) => (
+                <div
+                  className="prescription-row"
+                  key={i}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => navigate(`/report/${patient?.pat_id}?noteId=${rx.note_id}`)}
+                >
                   <span className="prescription-date">{rx.date}</span>
-                  <span className="prescription-content" style={{ whiteSpace: 'pre-line' }}>{rx.content}</span>
-                  {rx.compare && <button className="compare-btn">비교</button>}
+                  <span className="prescription-content" style={{ whiteSpace: 'pre-line' }}>
+                    {rx.content || '(소견 없음)'}
+                  </span>
+                  {rx.stress != null && (
+                    <span style={{ fontSize: 11, color: '#888', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+                      스트레스 {rx.stress}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
