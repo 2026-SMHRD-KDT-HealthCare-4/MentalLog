@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine
@@ -38,13 +38,22 @@ const SAMPLE_KEYWORDS = [
 const Report = () => {
   const { patientId } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
+  const [searchParams] = useSearchParams()
+  const noteId = searchParams.get('noteId')
+
+  const passedPatient   = location.state?.patient     || null
+  const passedNotes     = location.state?.notes       || null
+  const passedTotal     = location.state?.totalStress ?? null
+  const passedPeak      = location.state?.peakStress  ?? null
+  const passedThreshold = location.state?.threshold   ?? null
 
   const [patient, setPatient] = useState(null)
-  const [notes, setNotes] = useState('')
+  const [notes, setNotes] = useState(passedNotes || '')
   const [summary, setSummary] = useState('')
-  const [cumulativeAvg, setCumulativeAvg] = useState(0)
-  const [peakStress, setPeakStress] = useState(0)
-  const [threshold, setThreshold] = useState(0)
+  const [cumulativeAvg, setCumulativeAvg] = useState(passedTotal ?? 0)
+  const [peakStress, setPeakStress] = useState(passedPeak ?? 0)
+  const [threshold, setThreshold] = useState(passedThreshold ?? 0)
   const hrv = 62
   const hr = 80
   const reportTime = new Date().toLocaleString('ko-KR', {
@@ -53,32 +62,51 @@ const Report = () => {
   })
 
   useEffect(() => {
+    // 히스토리에서 특정 소견 조회
+    if (noteId) {
+      axios.get(`${API}/api/notes/detail/${noteId}`).then(res => {
+        const d = res.data
+        if (!d) return
+        setPatient({
+          pat_id:     d.pat_id,
+          pat_name:   d.pat_name || d.pat_id,
+          birth_date: d.pat_birth,
+          gender:     d.pat_gender,
+        })
+        setNotes(d.notes || '')
+        setPeakStress(d.stress_peak || 0)
+        setCumulativeAvg(d.stress_total || 0)
+      }).catch(() => {})
+      return
+    }
+
+    // 진단 완료 후 진입 (state로 받은 값 우선)
     Promise.all([
       axios.get(`${API}/api/patients/${patientId}`).catch(() => ({ data: null })),
       axios.get(`${API}/api/notes/${patientId}`).catch(() => ({ data: null })),
       axios.get(`${API}/api/history/${patientId}`).catch(() => ({ data: [] })),
       axios.get(`${API}/api/questionnaire/${patientId}`).catch(() => ({ data: null })),
     ]).then(([patRes, notesRes, histRes, qRes]) => {
-      setPatient(patRes.data || {
-        pat_id: patientId || 'P002', pat_name: '박망나뇽',
-        pat_birth: '1924-01-01', pat_gender: '남', diagnosis: '범불안장애(GAD)',
+      setPatient(patRes.data || passedPatient || {
+        pat_id: patientId, pat_name: patientId,
+        birth_date: null, gender: '–', med_history: '–',
       })
       if (notesRes.data) {
-        if (notesRes.data.notes) setNotes(notesRes.data.notes)
-        setPeakStress(notesRes.data.stress_peak || 0)
+        if (notesRes.data.notes && !passedNotes) setNotes(notesRes.data.notes)
+        if (passedPeak === null) setPeakStress(notesRes.data.stress_peak || 0)
       }
       const visits = histRes.data || []
-      if (visits.length > 0) {
+      if (visits.length > 0 && passedTotal === null) {
         setCumulativeAvg(Math.round(
           visits.reduce((sum, v) => sum + (v.stress_total || 0), 0) / visits.length
         ))
       }
-      if (qRes.data?.threshold) setThreshold(qRes.data.threshold)
+      if (qRes.data?.threshold && passedThreshold === null) setThreshold(qRes.data.threshold)
     })
-  }, [patientId])
+  }, [patientId, noteId])
 
-  const age = patient?.pat_birth
-    ? new Date().getFullYear() - new Date(patient.pat_birth).getFullYear()
+  const age = patient?.birth_date
+    ? new Date().getFullYear() - new Date(patient.birth_date).getFullYear()
     : '-'
 
   return (
@@ -88,19 +116,25 @@ const Report = () => {
         <div className="nav-controls">
           <button className="nav-icon-btn" onClick={() => navigate(-1)}>←</button>
           <button className="nav-icon-btn" onClick={() => navigate('/schedule')}>↑</button>
+          <span
+            style={{ fontSize: 13, color: '#888', marginLeft: 4, fontFamily: 'Georgia, serif', fontWeight: 600, cursor: 'pointer' }}
+            onClick={() => navigate('/schedule')}
+          >M</span>
         </div>
 
         <div className="nav-patient-nav">
           <button className="nav-arrow-btn">&lt;&lt;</button>
           <span className="nav-patient-name-btn" style={{ cursor: 'default' }}>
-            박망나-1b
+            {patient?.pat_name || patientId}
           </span>
           <button className="nav-arrow-btn">&gt;&gt;</button>
         </div>
 
-        <div className="nav-user-area">
+        <div className="nav-user-area" onClick={() => navigate('/profile')} style={{ cursor: 'pointer' }}>
           <span className="nav-user-label">User</span>
-          <button className="nav-user-btn">문</button>
+          <button className="nav-user-btn">
+            {(() => { const d = JSON.parse(sessionStorage.getItem('doctor') || '{}'); return d.doc_name?.[0] || '의' })()}
+          </button>
         </div>
       </nav>
 
@@ -121,7 +155,7 @@ const Report = () => {
                 환자 : {patient?.pat_name || '...'}
               </div>
               <div className="patient-sub">
-                Age: {age}세 / {patient?.pat_gender} / 환자번호 {patient?.pat_id}
+                Age: {age}세 / {patient?.gender} / 환자번호 {patient?.pat_id}
               </div>
             </div>
 
@@ -207,7 +241,12 @@ const Report = () => {
                     axisLine={false}
                   />
                   <Tooltip content={<GraphTooltip />} />
-                  <ReferenceLine y={38} stroke="#E53935" strokeWidth={1.5} />
+                  {threshold > 0 && (
+                    <ReferenceLine y={threshold} stroke="#E53935" strokeWidth={1.5}
+                      strokeDasharray="4 2"
+                      label={{ value: `임계치 ${threshold}ms`, position: 'insideTopRight', fontSize: 10, fill: '#E53935' }}
+                    />
+                  )}
                   <Line
                     type="monotone"
                     dataKey="value"
@@ -232,9 +271,7 @@ const Report = () => {
             </div>
             <div className="report-summary-body">
               {summary || (
-                <span style={{ color: '#CCC' }}>
-                  "에서나 이래도 뭘 상처이 됩습시다..."
-                </span>
+                <span style={{ color: '#CCC' }}>저장된 요약이 없습니다.</span>
               )}
               {summary && (
                 <div style={{ fontSize: 11, color: '#AAA', marginTop: 8 }}>
