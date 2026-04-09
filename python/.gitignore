@@ -1,3 +1,4 @@
 .env
 *pkl
 python/stress_bundle.pkl
+devil-nayeon-firebase-*.json
