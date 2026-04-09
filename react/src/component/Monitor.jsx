@@ -148,7 +148,7 @@ const Monitor = () => {
         content:  v.notes || '',
         stress:   v.stress_total,
       })))
-      if (notesRes.data?.notes) setNotes(notesRes.data.notes)
+      // 새 세션은 소견 빈 상태로 시작 (이전 기록은 과거 처방 내용에서 확인)
       if (qRes.data) {
         pssScoreRef.current = qRes.data.stress_score || 0
         setThreshold(qRes.data.threshold || 70)
@@ -206,7 +206,9 @@ const Monitor = () => {
             setPeakStress(prev => (prev === null || total > prev) ? total : prev)
           }
         }
-      } catch (e) {}
+      } catch (e) {
+        // Python API 연결 실패 시 무시 (서버 미실행 상태 포함)
+      }
     }, 1000)
     return () => clearInterval(interval)
   }, [sessionActive])
@@ -250,9 +252,6 @@ const Monitor = () => {
 
   // ── 저장 ──
   const handleSave = async () => {
-    const timestamp = new Date().toLocaleString('ko-KR')
-    const savedNote = `${notes}\n\n저장완료입니다 ✓\n${timestamp}`
-    setNotes(savedNote)
     setIsSaved(true)
     try {
       await axios.post(`${API}/api/notes`, {
@@ -272,6 +271,7 @@ const Monitor = () => {
         stress:  v.stress_total,
       })))
     } catch (e) {
+      setIsSaved(false)
       console.error('저장 실패:', e?.response?.data || e?.message || e)
       alert(`저장 실패: ${e?.response?.data?.detail || e?.response?.data?.error || e?.message || '알 수 없는 오류'}`)
     }
@@ -421,10 +421,10 @@ const Monitor = () => {
             {/* 추세 */}
             <div className="trend-section">
               <span style={{ fontWeight: 600, color: '#555' }}>W추세</span>
-              <span className={`trend-badge ${peakStress > threshold ? 'up' : 'down'}`}>
-                {peakStress > threshold ? '▲' : '▼'}
+              <span className={`trend-badge ${(peakStress ?? 0) > (threshold ?? 0) ? 'up' : 'down'}`}>
+                {(peakStress ?? 0) > (threshold ?? 0) ? '▲' : '▼'}
               </span>
-              지난 주에 비하여 n % {peakStress > threshold ? '상승' : '하강'}
+              지난 주에 비하여 n % {(peakStress ?? 0) > (threshold ?? 0) ? '상승' : '하강'}
             </div>
 
             {/* 키워드 분석 */}
@@ -594,7 +594,10 @@ const Monitor = () => {
                   onClick={() => navigate(`/report/${patient?.pat_id}?noteId=${rx.note_id}`)}
                 >
                   <span className="prescription-date">{rx.date}</span>
-                  <span className="prescription-content" style={{ whiteSpace: 'pre-line' }}>
+                  <span className="prescription-content" style={{
+                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden', whiteSpace: 'pre-line',
+                  }}>
                     {rx.content || '(소견 없음)'}
                   </span>
                   {rx.stress != null && (

@@ -15,7 +15,12 @@ NODE_API = "http://localhost:3001"
 # === HRV ML 모델 로드 ===
 try:
     bundle = joblib.load('stress_bundle.pkl')
-except:
+    print("ML 모델 로드 성공")
+except FileNotFoundError:
+    print("⚠️ stress_bundle.pkl 없음 → RMSSD 폴백 모드")
+    bundle = None
+except Exception as e:
+    print(f"⚠️ ML 모델 로드 실패: {e} → RMSSD 폴백 모드")
     bundle = None
 
 
