@@ -9,7 +9,7 @@ const SCHEDULE_DATA = {
   scheduled: [
     { time: '12:30', name: '김망나뇽', age: 100, questionnaire: true,  count: 3 },
     { time: '13:00', name: '박망나뇽', age: 100, questionnaire: false, count: 3 },
-    { time: '13:30', name: '박망나뇽', age: 132, questionnaire: false, count: 1 },
+    { time: '13:30', name: '최망나뇽', age: 132, questionnaire: false, count: 1 },
     { time: '14:00', name: '조망나뇽', age: 102, questionnaire: false, count: 2 },
     { time: '14:30', name: '양망나뇽', age: 98,  questionnaire: false, count: 1 },
     { time: '15:00', name: '김나연',   age: 120, questionnaire: false, count: 1 },
@@ -21,8 +21,8 @@ const SCHEDULE_DATA = {
     { time: '14:00', name: '조망나뇽', age: 102, questionnaire: false, count: 2 },
     { time: '14:30', name: '양망나뇽', age: 98,  questionnaire: false, count: 1 },
     { time: '15:00', name: '김나연',   age: 120, questionnaire: false, count: 1 },
-    { time: '16:30', name: '문하눟',   age: 200, questionnaire: false, count: 1 },
     { time: '16:00', name: '조민주',   age: 170, questionnaire: false, count: 2 },
+    { time: '16:30', name: '문하눟',   age: 200, questionnaire: false, count: 1 },
   ],
   walk_in: [
     { time: '13:00', name: '박망나뇽', age: 100, questionnaire: false, count: 3 },

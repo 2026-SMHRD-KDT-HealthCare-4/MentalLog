@@ -89,7 +89,7 @@ const Report = () => {
     ]).then(([patRes, notesRes, histRes, qRes]) => {
       setPatient(patRes.data || passedPatient || {
         pat_id: patientId, pat_name: patientId,
-        pat_birth: null, pat_gender: '–', diagnosis: '–',
+        birth_date: null, gender: '–', med_history: '–',
       })
       if (notesRes.data) {
         if (notesRes.data.notes && !passedNotes) setNotes(notesRes.data.notes)
@@ -241,7 +241,12 @@ const Report = () => {
                     axisLine={false}
                   />
                   <Tooltip content={<GraphTooltip />} />
-                  <ReferenceLine y={38} stroke="#E53935" strokeWidth={1.5} />
+                  {threshold > 0 && (
+                    <ReferenceLine y={threshold} stroke="#E53935" strokeWidth={1.5}
+                      strokeDasharray="4 2"
+                      label={{ value: `임계치 ${threshold}ms`, position: 'insideTopRight', fontSize: 10, fill: '#E53935' }}
+                    />
+                  )}
                   <Line
                     type="monotone"
                     dataKey="value"
@@ -266,9 +271,7 @@ const Report = () => {
             </div>
             <div className="report-summary-body">
               {summary || (
-                <span style={{ color: '#CCC' }}>
-                  "에서나 이래도 뭘 상처이 됩습시다..."
-                </span>
+                <span style={{ color: '#CCC' }}>저장된 요약이 없습니다.</span>
               )}
               {summary && (
                 <div style={{ fontSize: 11, color: '#AAA', marginTop: 8 }}>

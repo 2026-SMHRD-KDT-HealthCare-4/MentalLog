@@ -228,14 +228,12 @@ router.post('/notes', async (req, res) => {
   const sid = session_id || Date.now()
   const graphData = JSON.stringify({ total: stress_total || 0, peak: stress_peak || 0 })
 
-  console.log('[notes] 받은 값:', { session_id: sid, pat_id, stress_total, stress_peak })
-
   try {
     // pat_id가 tb_patient에 실제로 존재하는지 확인
     const patCheck = await conn.query('SELECT pat_id FROM tb_patient WHERE pat_id = $1', [pat_id])
-    console.log('[notes] tb_patient 조회 결과:', patCheck.rows)
     if (patCheck.rows.length === 0) {
-      return res.status(400).json({ error: `pat_id="${pat_id}" 가 tb_patient에 없습니다. 환자 등록 먼저 필요.` })
+      console.error(`세션 저장 실패: pat_id="${pat_id}" 가 tb_patient에 없음`)
+      return res.status(400).json({ error: `환자(${pat_id})가 DB에 없습니다. 환자 등록 후 다시 시도하세요.` })
     }
 
     // 세션이 이미 있으면 UPDATE, 없으면 INSERT
