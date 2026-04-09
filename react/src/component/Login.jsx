@@ -16,6 +16,7 @@ const Login = () => {
     try {
       const res = await axios.post(`${API}/login`, { doc_id: id, password: pw })
       if (res.data.success) {
+        sessionStorage.setItem('doctor', JSON.stringify(res.data.user))
         navigate('/schedule')
       } else {
         setError(res.data.message || '로그인 실패')
