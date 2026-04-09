@@ -113,6 +113,31 @@ router.post('/rmssd', async (req, res) => {
   }
 })
 
+// GET /api/hrv/:sessionId - 세션 HRV 데이터 (레포트 그래프용)
+router.get('/hrv/:sessionId', async (req, res) => {
+  try {
+    const sql = `
+      SELECT rmssd_val, hr_val, pnn50_val, sd1_val,
+             TO_CHAR(time_stamp, 'HH24:MI') AS label
+      FROM tb_hrv_data
+      WHERE session_id = $1
+      ORDER BY time_stamp ASC
+    `
+    const result = await conn.query(sql, [req.params.sessionId])
+    // 그래프용 포맷: { x: 인덱스, value: rmssd }
+    const rows = result.rows.map((r, i) => ({
+      x:     i,
+      value: r.rmssd_val,
+      hr:    r.hr_val,
+      label: r.label,
+    }))
+    res.json(rows)
+  } catch (err) {
+    console.error('HRV 조회 실패:', err.message)
+    res.status(500).json({ error: 'HRV 조회 실패', detail: err.message })
+  }
+})
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  문진 API (tb_patient.servey_scores)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
