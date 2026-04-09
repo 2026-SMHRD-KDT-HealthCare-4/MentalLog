@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS TB_PATIENT (
   pat_id           VARCHAR(50)  PRIMARY KEY,
   pat_name         VARCHAR(50)  NOT NULL,
   pat_birth        DATE,
-  pat_gender       CHAR(1),
+  pat_gender       VARCHAR(10),
   pat_phone        VARCHAR(20),
   diagnosis        VARCHAR(100),
   stress_threshold INT DEFAULT 70,

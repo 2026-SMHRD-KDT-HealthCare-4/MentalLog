@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -11,17 +11,18 @@ import { circleClass } from '../utils/stressUtils'
 const API = 'http://localhost:3001'
 const PYTHON_API = 'http://localhost:8000'
 
-// 가중치 파라미터 (조절 가능)
+// 가중치 파라미터
 const WEIGHTS = {
-  hrv: 0.5,           // HRV 스트레스 가중치
-  voice: 0.2,         // 음성 스트레스 가중치 (모델 학습 완료 후 연결)
-  questionnaire: 0.3, // 문진(PSS) 스트레스 가중치
+  hrv:   0.486,  // 심전도(HRV) 48.6%
+  voice: 0.333,  // 음성(Voice) 33.3%
+  pss:   0.181,  // 문진(PSS)   18.1%
 }
 
-// RMSSD → 스트레스 변환
-function rmssdToStress(rmssd) {
-  const c = Math.max(5, Math.min(100, rmssd))
-  return Math.round(100 - ((c - 5) / 95) * 100)
+// 가중 합산 스트레스 계산 (분당 호출)
+// hrv: 0~100, voice: 0~100, pss: 0~40 → 정규화 후 가중합
+function calcTotalStress(hrv, voice, pss) {
+  const pssNorm = (pss / 40) * 100
+  return Math.round(hrv * WEIGHTS.hrv + voice * WEIGHTS.voice + pssNorm * WEIGHTS.pss)
 }
 
 // 툴팁
@@ -44,25 +45,6 @@ const WAITING_PATIENTS = [
   { pat_id: 'P005', pat_name: '양망나뇽', age: 98, gender: '여', visit_count: 1, has_questionnaire: false },
 ]
 
-const SAMPLE_PRESCRIPTIONS = [
-  {
-    date: '2026/03/01',
-    content: "스트레스 지수 높음\n'가족'이라는 키워드는 높아보임\n다음에 다시 한번 이야기 해보기",
-  },
-  {
-    date: '2026/02/04',
-    content: "너무 걱정되어있음\n눈에 다른 곳을 보고 있음\n스트레스 지수 높음",
-    compare: true,
-  },
-  {
-    date: '2026/01/01',
-    content: "괜찮은것같음\n스트레스 지수 낮음",
-  },
-  {
-    date: '2025/12/26',
-    content: "오늘 하루 이했습니다. 성 생명 뿔리뿔리\n준경이 보임\n극 처방이 필요합동 등\n스트레스 지수 중간",
-  },
-]
 
 const SAMPLE_KEYWORDS = [
   { id: 1, word: '가족', time: '12:35:24', content: "가족들이 뭐 대화도 안되고 머 그래서 힘들어요 → 동의 문장 그런거 출력" },
@@ -84,20 +66,33 @@ const Monitor = () => {
 
   // RMSSD 데이터
   const [sessionActive, setSessionActive] = useState(true)
-  const rmssdRef = useRef(null)
-  const baseRef = useRef(45)
+  const sessionIdRef = useRef(Date.now())   // 세션 ID (BIGINT, DB session_id)
+  const lastHrvStressRef = useRef(0)        // 마지막 ML HRV 스트레스값 보관 (PSS 즉시 반영용)
+  const pssScoreRef = useRef(0)             // pssScore ref (폴링 클로저 stale 방지)
 
   // RMSSD 차트 데이터 (Python API)
   const [rmssdData, setRmssdData] = useState([])
 
+  // 1분 베이스라인
+  const [baselineRmssd, setBaselineRmssd] = useState(null)
+  const [baselineReady, setBaselineReady] = useState(false)
+
+  // PSS 입력
+  const [pssInput, setPssInput] = useState('')
+  const [pssSubmitted, setPssSubmitted] = useState(false)
+
   // 스트레스 지수
-  const [avgStress, setAvgStress] = useState(38)   // HRV 기반 실시간 평균
-  const [peakStress, setPeakStress] = useState(0)  // HRV 기반 세션 내 최고값
-  const [threshold, setThreshold] = useState(70)   // 문진(PSS) 기반 임계치
-  const [pssScore, setPssScore] = useState(0)       // 문진(PSS) 스트레스 점수
-  const voiceStress = 0                             // 음성 스트레스 (모델 학습 완료 전 placeholder)
+  const [threshold, setThreshold] = useState(null) // RMSSD 기반 임계치 (ms)
+  const voiceStress = 0                             // 음성 스트레스 placeholder (0~100)
   const [hrv, setHrv] = useState(52)
   const [hr, setHr] = useState(72)
+
+  // 분당 총합 스트레스
+  const [totalStress, setTotalStress] = useState(null)   // 분당 평균 (평균 원형)
+  const [peakStress, setPeakStress] = useState(null)     // 세션 최고치 (최고 원형)
+
+  // 과거 처방 내역
+  const [prescriptions, setPrescriptions] = useState([])
 
   // 키워드
   const [keywords, setKeywords] = useState(SAMPLE_KEYWORDS)
@@ -107,25 +102,55 @@ const Monitor = () => {
   // 의사 소견
   const [notes, setNotes] = useState('')
 
+  // ── 환자 입실 시 베이스라인 리셋 + 새 세션 ID 생성 ──
+  useEffect(() => {
+    axios.post(`${PYTHON_API}/reset-baseline`).catch(() => {})
+    sessionIdRef.current = Date.now()
+    setBaselineRmssd(null)
+    setBaselineReady(false)
+  }, [patientId])
+
   // ── 환자 로드 ──
   useEffect(() => {
     const idx = WAITING_PATIENTS.findIndex(p => p.pat_id === patientId)
     if (idx !== -1) setCurrentPatientIdx(idx)
     const p = WAITING_PATIENTS.find(p => p.pat_id === patientId) || WAITING_PATIENTS[0]
 
+    const fallbackPatient = {
+      pat_id: p.pat_id, pat_name: p.pat_name,
+      birth_date: null, gender: p.gender,
+      med_history: null,
+    }
+
     Promise.all([
       axios.get(`${API}/api/patients/${p.pat_id}`).catch(() => ({ data: null })),
       axios.get(`${API}/api/notes/${p.pat_id}`).catch(() => ({ data: null })),
       axios.get(`${API}/api/questionnaire/${p.pat_id}`).catch(() => ({ data: null })),
-    ]).then(([patRes, notesRes, qRes]) => {
-      setPatient(patRes.data || {
-        pat_id: p.pat_id, pat_name: p.pat_name,
-        pat_birth: '1982-05-14', pat_gender: p.gender,
-        pat_phone: '010-1234-5678', diagnosis: '범불안장애(GAD)',
-      })
-      if (notesRes.data?.notes) setNotes(notesRes.data.notes)
+      axios.get(`${API}/api/history/${p.pat_id}`).catch(() => ({ data: [] })),
+    ]).then(async ([patRes, notesRes, qRes, histRes]) => {
+      const patData = patRes.data || fallbackPatient
+      setPatient(patData)
+
+      // 페이지 진입 시 환자 upsert (세션 저장 전에 반드시 존재해야 함)
+      const doctor = JSON.parse(sessionStorage.getItem('doctor') || '{}')
+      await axios.post(`${API}/api/patients`, {
+        pat_id:      patData.pat_id,
+        pat_name:    patData.pat_name,
+        gender:      patData.gender      || null,
+        birth_date:  patData.birth_date  || null,
+        med_history: patData.med_history || null,
+      }).catch(e => console.error('환자 upsert 실패:', e?.response?.data || e?.message))
+
+      const visits = histRes.data || []
+      setPrescriptions(visits.map(v => ({
+        note_id:  v.visit_id,
+        date:     v.visit_date,
+        content:  v.notes || '',
+        stress:   v.stress_total,
+      })))
+      // 새 세션은 소견 빈 상태로 시작 (이전 기록은 과거 처방 내용에서 확인)
       if (qRes.data) {
-        setPssScore(qRes.data.stress_score || 0)
+        pssScoreRef.current = qRes.data.stress_score || 0
         setThreshold(qRes.data.threshold || 70)
       }
     })
@@ -141,9 +166,9 @@ const Monitor = () => {
           hour: now.getHours(),
           minute: now.getMinutes(),
           second: now.getSeconds(),
-          data_points: 10,
+          data_points: 1,
           pat_id: patient?.pat_id,
-          session_id: `${patient?.pat_id}_${now.toISOString().slice(0, 10)}`,
+          session_id: sessionIdRef.current,
         })
         const data = res.data
 
@@ -157,28 +182,52 @@ const Monitor = () => {
             const next = [...prev, ...newPoints]
             return next.length > 100 ? next.slice(-100) : next
           })
+          // HRV 박스: 최신 RMSSD 값으로 실시간 갱신
+          const latestRmssd = data.realtime_rmssd[data.realtime_rmssd.length - 1]
+          if (latestRmssd != null) setHrv(Math.round(latestRmssd))
         }
 
-        // ML 결과: hr_mean/hr_max는 심박수(bpm) 값이므로 스트레스 원형에 직접 사용하지 않음
-      } catch (e) {}
-    }, 2000)
+        // 1분 베이스라인 수신
+        if (data.baseline_ready && data.baseline_rmssd && !baselineReady) {
+          setBaselineRmssd(data.baseline_rmssd)
+          setBaselineReady(true)
+        }
+
+        // 분당 총합 스트레스 갱신 + HR 박스 업데이트
+        if (data.ml_triggered && data.ml_result) {
+          if (data.ml_result.hr_mean != null)
+            setHr(Math.round(data.ml_result.hr_mean))
+
+          if (data.ml_result.ml_prediction != null) {
+            const hrvStress = Math.max(0, Math.min(100, data.ml_result.ml_prediction))
+            lastHrvStressRef.current = hrvStress
+            const total = calcTotalStress(hrvStress, voiceStress, pssScoreRef.current)
+            setTotalStress(total)
+            setPeakStress(prev => (prev === null || total > prev) ? total : prev)
+          }
+        }
+      } catch (e) {
+        // Python API 연결 실패 시 무시 (서버 미실행 상태 포함)
+      }
+    }, 1000)
     return () => clearInterval(interval)
   }, [sessionActive])
 
-  // ── RMSSD 시뮬레이션 ──
-  useEffect(() => {
-    if (!sessionActive) return
-    rmssdRef.current = setInterval(() => {
-      baseRef.current = Math.max(15, Math.min(80, baseRef.current + (Math.random() - 0.5) * 7))
-      const val = Math.round(baseRef.current * 10) / 10
-      setHrv(Math.round(val))
-      setHr(prev => Math.max(60, Math.min(120, prev + Math.round((Math.random() - 0.5) * 3))))
-      const stress = rmssdToStress(val)
-      setAvgStress(prev => Math.round(prev * 0.9 + stress * 0.1))
-      setPeakStress(prev => Math.max(prev, stress))
-    }, 1000)
-    return () => clearInterval(rmssdRef.current)
-  }, [sessionActive])
+
+  // ── PSS 임계치 계산 + 즉시 원형 반영 ──
+  const handlePssSubmit = () => {
+    const pss = Number(pssInput)
+    if (pss < 0 || pss > 40 || !baselineRmssd) return
+    const margin = 0.439 - (pss / 40) * 0.291
+    const newThreshold = Math.round(baselineRmssd * (1 - margin) * 10) / 10
+    setThreshold(newThreshold)
+    pssScoreRef.current = pss
+    setPssSubmitted(true)
+    // 마지막 HRV 스트레스값 + 새 PSS로 즉시 총합 계산
+    const total = calcTotalStress(lastHrvStressRef.current, voiceStress, pss)
+    setTotalStress(total)
+    setPeakStress(prev => (prev === null || total > prev) ? total : prev)
+  }
 
   // ── 환자 전환 ──
   const goPrev = () => {
@@ -197,33 +246,49 @@ const Monitor = () => {
     navigate(`/monitor/${p.pat_id}`)
   }
 
-  // 가중 평균: HRV 50% + 음성 20%(placeholder 0) + 문진(PSS) 30%
-  const weightedAvg = Math.round(
-    avgStress * WEIGHTS.hrv +
-    voiceStress * WEIGHTS.voice +
-    pssScore * WEIGHTS.questionnaire
-  )
+  // 현재 RMSSD (차트 최신값), 임계치 초과 여부 (RMSSD < threshold → 스트레스 과다)
+  const currentRmssd = rmssdData.length > 0 ? rmssdData[rmssdData.length - 1].value : null
+  const isOverThreshold = pssSubmitted && threshold !== null && currentRmssd !== null && currentRmssd < threshold
 
   // ── 저장 ──
   const handleSave = async () => {
-    const timestamp = new Date().toLocaleString('ko-KR')
-    const savedNote = `${notes}\n\n저장완료입니다 ✓\n${timestamp}`
-    setNotes(savedNote)
     setIsSaved(true)
     try {
       await axios.post(`${API}/api/notes`, {
-        pat_id: patient?.pat_id,
+        session_id:   sessionIdRef.current,
+        pat_id:       patient?.pat_id,
         notes,
-        stress_total: weightedAvg,  // HRV+음성+문진 가중 평균
-        stress_peak: peakStress,    // HRV 세션 내 최고값
+        stress_total: totalStress ?? 0,
+        stress_peak:  peakStress  ?? 0,
       })
-    } catch (e) {}
+      // 저장 후 처방 내역 갱신
+      const histRes = await axios.get(`${API}/api/history/${patient?.pat_id}`).catch(() => ({ data: [] }))
+      const visits = histRes.data || []
+      setPrescriptions(visits.map(v => ({
+        note_id: v.visit_id,
+        date:    v.visit_date,
+        content: v.notes || '',
+        stress:  v.stress_total,
+      })))
+    } catch (e) {
+      setIsSaved(false)
+      console.error('저장 실패:', e?.response?.data || e?.message || e)
+      alert(`저장 실패: ${e?.response?.data?.detail || e?.response?.data?.error || e?.message || '알 수 없는 오류'}`)
+    }
   }
 
   // ── 진단 완료 → 레포트 ──
   const handleComplete = async () => {
     await handleSave()
-    navigate(`/report/${patient?.pat_id}`)
+    navigate(`/report/${patient?.pat_id}`, {
+      state: {
+        patient,
+        notes,
+        totalStress: totalStress ?? 0,
+        peakStress:  peakStress  ?? 0,
+        threshold:   threshold   ?? 0,
+      }
+    })
   }
 
   const currentPatient = WAITING_PATIENTS[currentPatientIdx]
@@ -235,7 +300,10 @@ const Monitor = () => {
         <div className="nav-controls">
           <button className="nav-icon-btn" onClick={() => navigate('/schedule')}>←</button>
           <button className="nav-icon-btn" onClick={() => window.location.reload()}>↺</button>
-          <span style={{ fontSize: 13, color: '#888', marginLeft: 4, fontFamily: 'Georgia, serif', fontWeight: 600 }}>M</span>
+          <span
+            style={{ fontSize: 13, color: '#888', marginLeft: 4, fontFamily: 'Georgia, serif', fontWeight: 600, cursor: 'pointer' }}
+            onClick={() => navigate('/schedule')}
+          >M</span>
         </div>
 
         {/* << 환자명 >> */}
@@ -264,9 +332,11 @@ const Monitor = () => {
           )}
         </div>
 
-        <div className="nav-user-area">
+        <div className="nav-user-area" onClick={() => navigate('/profile')} style={{ cursor: 'pointer' }}>
           <span className="nav-user-label">User</span>
-          <button className="nav-user-btn">문</button>
+          <button className="nav-user-btn">
+            {(() => { const d = JSON.parse(sessionStorage.getItem('doctor') || '{}'); return d.doc_name?.[0] || '의' })()}
+          </button>
         </div>
       </nav>
 
@@ -282,29 +352,67 @@ const Monitor = () => {
                 환자 : {patient?.pat_name || '...'}
               </div>
               <div className="patient-sub">
-                Age: {patient?.pat_birth
-                  ? `${new Date().getFullYear() - new Date(patient.pat_birth).getFullYear()}세`
-                  : '–'} / {patient?.pat_gender} / 환자번호 {patient?.pat_id}
+                Age: {patient?.birth_date
+                  ? `${new Date().getFullYear() - new Date(patient.birth_date).getFullYear()}세`
+                  : '–'} / {patient?.gender} / 환자번호 {patient?.pat_id}
               </div>
+
+              {/* 베이스라인 상태 (항상 표시) */}
+              <div className={`baseline-status ${baselineReady ? 'ready' : 'measuring'}`}>
+                {baselineReady
+                  ? `✓ 베이스라인 완료: ${baselineRmssd} ms`
+                  : '⏳ 베이스라인 측정 중 (1분)...'}
+              </div>
+
+              {/* PSS 입력 (제출 전) */}
+              {!pssSubmitted ? (
+                <div className="pss-input-section">
+                  <span className="pss-label">PSS 점수 (0~40)</span>
+                  <div className="pss-row">
+                    <input
+                      type="number" min="0" max="40"
+                      value={pssInput}
+                      onChange={e => setPssInput(e.target.value)}
+                      placeholder="0~40"
+                      className="pss-input"
+                    />
+                    <button
+                      className="pss-btn"
+                      onClick={handlePssSubmit}
+                      disabled={!baselineReady || pssInput === ''}
+                    >
+                      임계치 설정
+                    </button>
+                  </div>
+                  {!baselineReady && (
+                    <div className="pss-hint">베이스라인 완료 후 임계치 설정 가능합니다</div>
+                  )}
+                </div>
+              ) : (
+                /* PSS 제출 결과 */
+                <div className="pss-result">
+                  PSS {pssInput}점 → 임계치 {threshold} ms
+                </div>
+              )}
             </div>
 
             {/* 스트레스 원형 3개 */}
             <div className="stress-circles-section">
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(weightedAvg)}`}>
-                  <span className="num">{weightedAvg}</span>
+                <div className={`stress-circle-ring ${totalStress !== null ? circleClass(totalStress) : 'c-green'}`}>
+                  <span className="num">{totalStress ?? '–'}</span>
                 </div>
                 <span className="stress-circle-label">평균</span>
               </div>
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(peakStress)}`}>
-                  <span className="num">{peakStress}</span>
+                <div className={`stress-circle-ring ${peakStress !== null ? circleClass(peakStress) : 'c-green'}`}>
+                  <span className="num">{peakStress ?? '–'}</span>
                 </div>
                 <span className="stress-circle-label">최고</span>
               </div>
               <div className="stress-circle-item">
-                <div className={`stress-circle-ring ${circleClass(threshold)}`}>
-                  <span className="num">{threshold}</span>
+                <div className={`stress-circle-ring c-orange`}>
+                  <span className="num">{threshold ?? '–'}</span>
                 </div>
                 <span className="stress-circle-label">임계치</span>
               </div>
@@ -313,10 +421,10 @@ const Monitor = () => {
             {/* 추세 */}
             <div className="trend-section">
               <span style={{ fontWeight: 600, color: '#555' }}>W추세</span>
-              <span className={`trend-badge ${peakStress > threshold ? 'up' : 'down'}`}>
-                {peakStress > threshold ? '▲' : '▼'}
+              <span className={`trend-badge ${(peakStress ?? 0) > (threshold ?? 0) ? 'up' : 'down'}`}>
+                {(peakStress ?? 0) > (threshold ?? 0) ? '▲' : '▼'}
               </span>
-              지난 주에 비하여 n % {peakStress > threshold ? '상승' : '하강'}
+              지난 주에 비하여 n % {(peakStress ?? 0) > (threshold ?? 0) ? '상승' : '하강'}
             </div>
 
             {/* 키워드 분석 */}
@@ -343,7 +451,7 @@ const Monitor = () => {
                 <>
                   <div className="keywords-section-header">
                     <span>{isSaved ? '주요 키워드' : '실시간 키워드 분석'}</span>
-                    {weightedAvg > threshold && (
+                    {isOverThreshold && (
                       <span style={{ fontSize: 10, color: '#E07800', background: '#FFF3E0', padding: '1px 6px', borderRadius: 3, border: '1px solid #FFD180' }}>
                         임계치 초과
                       </span>
@@ -413,13 +521,16 @@ const Monitor = () => {
                       axisLine={false}
                     />
                     <Tooltip content={<GraphTooltip />} />
-                    {/* 임계치 기준선 (빨간 가로선) */}
-                    <ReferenceLine
-                      y={rmssdToStress(threshold) > 0 ? 65 - rmssdToStress(threshold) * 0.45 : 35}
-                      stroke="#E53935"
-                      strokeWidth={1.5}
-                      strokeDasharray="0"
-                    />
+                    {/* 임계치 기준선 (빨간 가로선) - RMSSD ms 단위 */}
+                    {threshold !== null && (
+                      <ReferenceLine
+                        y={threshold}
+                        stroke="#E53935"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 2"
+                        label={{ value: `임계치 ${threshold}ms`, position: 'insideTopRight', fontSize: 10, fill: '#E53935' }}
+                      />
+                    )}
                     <Line
                       type="monotone"
                       dataKey="value"
@@ -473,11 +584,27 @@ const Monitor = () => {
               <span className="panel-title">과거 처방 내용</span>
             </div>
             <div className="prescription-list">
-              {SAMPLE_PRESCRIPTIONS.map((rx, i) => (
-                <div className="prescription-row" key={i}>
+              {prescriptions.length === 0 ? (
+                <div className="empty-state">저장된 처방 내역이 없습니다</div>
+              ) : prescriptions.map((rx, i) => (
+                <div
+                  className="prescription-row"
+                  key={i}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => navigate(`/report/${patient?.pat_id}?noteId=${rx.note_id}`)}
+                >
                   <span className="prescription-date">{rx.date}</span>
-                  <span className="prescription-content" style={{ whiteSpace: 'pre-line' }}>{rx.content}</span>
-                  {rx.compare && <button className="compare-btn">비교</button>}
+                  <span className="prescription-content" style={{
+                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden', whiteSpace: 'pre-line',
+                  }}>
+                    {rx.content || '(소견 없음)'}
+                  </span>
+                  {rx.stress != null && (
+                    <span style={{ fontSize: 11, color: '#888', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+                      스트레스 {rx.stress}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
