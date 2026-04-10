@@ -26,11 +26,11 @@ import requests
 from stress_main import calculate_stress
 
 # ── API 키 ──────────────────────────────────────────────────────────────
-CLOVA_SPEECH_SECRET_KEY  = "API KEY 부분"
-CLOVA_SPEECH_INVOKE_URL  = "API KEY 부분"
-NAVER_STORAGE_ACCESS_KEY = "API KEY 부분"
-NAVER_STORAGE_SECRET_KEY = "API KEY 부분"
-NAVER_STORAGE_BUCKET     = "API KEY 부분"
+CLOVA_SPEECH_SECRET_KEY  = 
+CLOVA_SPEECH_INVOKE_URL  = 
+NAVER_STORAGE_ACCESS_KEY = 
+NAVER_STORAGE_SECRET_KEY = 
+NAVER_STORAGE_BUCKET     = 
 
 # ── 상수 ────────────────────────────────────────────────────────────────
 PATIENT_SPEAKER_ID  = 1       # 화자분리 결과에서 환자 라벨 (추후 변경 가능)
