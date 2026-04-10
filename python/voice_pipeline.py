@@ -26,11 +26,12 @@ import requests
 from stress_main import calculate_stress
 
 # ── API 키 ──────────────────────────────────────────────────────────────
-CLOVA_SPEECH_SECRET_KEY  = 
-CLOVA_SPEECH_INVOKE_URL  = 
-NAVER_STORAGE_ACCESS_KEY = 
-NAVER_STORAGE_SECRET_KEY = 
-NAVER_STORAGE_BUCKET     = 
+CLOVA_SPEECH_SECRET_KEY  = ""
+CLOVA_SPEECH_INVOKE_URL  = ""
+NAVER_STORAGE_ACCESS_KEY = ""
+NAVER_STORAGE_SECRET_KEY = ""
+NAVER_STORAGE_BUCKET     = ""
+
 
 # ── 상수 ────────────────────────────────────────────────────────────────
 PATIENT_SPEAKER_ID  = 1       # 화자분리 결과에서 환자 라벨 (추후 변경 가능)
@@ -416,6 +417,43 @@ async def run_pipeline(
 
 
 # ════════════════════════════════════════════════════════════════════════
+# 테스트용 — 로컬 WAV 파일로 파이프라인 실행
+# ════════════════════════════════════════════════════════════════════════
+
+async def run_test_audio(
+    wav_path:   str,
+    session_id: str,
+    pss_score:  float,
+    threshold:  float,
+    hrv_stress: float = 50.0,
+) -> None:
+    """
+    마이크 녹음 대신 로컬 WAV 파일을 읽어 process_chunk() 를 1회 실행한다.
+
+    Parameters
+    ----------
+    wav_path   : 로컬 WAV 파일 경로
+    session_id : 세션 ID 문자열
+    pss_score  : PSS 문진 점수 (0~40)
+    threshold  : 피크 판단 임계치 (hrv_stress 기준)
+    hrv_stress : 테스트용 HRV 스트레스 값 (기본 50.0)
+    """
+    log.info(f"[Test] WAV 파일 로드: {wav_path}")
+    with open(wav_path, "rb") as f:
+        audio_bytes = f.read()
+    log.info(f"[Test] 파일 크기: {len(audio_bytes):,} bytes")
+
+    await process_chunk(
+        audio_bytes=audio_bytes,
+        chunk_start=datetime.now(),
+        hrv_stress=hrv_stress,
+        pss_score=pss_score,
+        threshold=threshold,
+        session_id=session_id,
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════
 # 단독 실행 진입점
 # ════════════════════════════════════════════════════════════════════════
 
@@ -423,34 +461,50 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Voice pipeline standalone runner")
-    parser.add_argument("--session_id",  default=str(int(datetime.now().timestamp() * 1000)))
-    parser.add_argument("--patient_id",  default="P001")
-    parser.add_argument("--pss_score",   type=float, default=20.0)
-    parser.add_argument("--threshold",   type=float, default=40.0)
+    parser.add_argument("--session_id",   default=str(int(datetime.now().timestamp() * 1000)))
+    parser.add_argument("--patient_id",   default="P001")
+    parser.add_argument("--pss_score",    type=float, default=20.0)
+    parser.add_argument("--threshold",    type=float, default=40.0)
+    parser.add_argument("--hrv_stress",   type=float, default=50.0,
+                        help="테스트 모드 전용 HRV 스트레스 값 (기본 50.0)")
+    parser.add_argument("--test_audio",   default=None,
+                        help="테스트용 로컬 WAV 파일 경로. 지정 시 마이크 녹음 없이 해당 파일로 pipeline 1회 실행")
     args = parser.parse_args()
 
-    # 단독 실행 시 hrv_stress 는 hrv_main HTTP API 에서 주기적으로 폴링
-    hrv_q: asyncio.Queue = asyncio.Queue()
-
-    async def _hrv_poller():
-        """hrv_main /health 또는 최신 ML 결과를 1분마다 hrv_q 에 push (단독 실행용)."""
-        import random
-        while True:
-            await asyncio.sleep(RECORD_SECONDS)
-            # 실제 운영 시: hrv_main 의 최신 ml_prediction 을 HTTP 로 가져와 put()
-            mock_hrv = random.uniform(20, 80)
-            await hrv_q.put(mock_hrv)
-            log.info(f"[HRV poller] hrv_stress={mock_hrv:.1f} → queue")
-
-    async def _main():
-        await asyncio.gather(
-            run_pipeline(
+    # ── 테스트 모드 ──────────────────────────────────────────────────────
+    if args.test_audio:
+        log.info(f"[Test 모드] 파일: {args.test_audio}")
+        asyncio.run(
+            run_test_audio(
+                wav_path=args.test_audio,
                 session_id=args.session_id,
                 pss_score=args.pss_score,
                 threshold=args.threshold,
-                hrv_stress_queue=hrv_q,
-            ),
-            _hrv_poller(),
+                hrv_stress=args.hrv_stress,
+            )
         )
+    # ── 일반 실행 모드 ────────────────────────────────────────────────────
+    else:
+        hrv_q: asyncio.Queue = asyncio.Queue()
 
-    asyncio.run(_main())
+        async def _hrv_poller():
+            """hrv_main ML 결과를 1분마다 hrv_q 에 push (단독 실행용)."""
+            import random
+            while True:
+                await asyncio.sleep(RECORD_SECONDS)
+                mock_hrv = random.uniform(20, 80)
+                await hrv_q.put(mock_hrv)
+                log.info(f"[HRV poller] hrv_stress={mock_hrv:.1f} → queue")
+
+        async def _main():
+            await asyncio.gather(
+                run_pipeline(
+                    session_id=args.session_id,
+                    pss_score=args.pss_score,
+                    threshold=args.threshold,
+                    hrv_stress_queue=hrv_q,
+                ),
+                _hrv_poller(),
+            )
+
+        asyncio.run(_main())
