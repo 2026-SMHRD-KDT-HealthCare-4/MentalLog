@@ -1,32 +1,85 @@
-import React from 'react'
-import { useState, useRef } from 'react'
-// useRef : 태그를 참조 할 수 있는 변수 생성 기능
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import axios from 'axios'
+import '../styles/monitor.css'
+
+const API = 'http://localhost:3001'
 
 const Join = () => {
+  const navigate = useNavigate()
+  const [form, setForm] = useState({
+    doc_id: '', passward: '', pw_confirm: '',
+    doc_name: '', hospital_name: '', license_no: '',
+  })
+  const [error, setError] = useState('')
 
-    const inputIdRef = useRef();
-    const inputPwRef = useRef();
-    const inputNickRef = useRef();
-    
-    const tryJoin = () => {
-        // 사용자가 입력한 값을 DB에 저장
-        // 사용자가 입력한 값 가지고 오기
-        let inputId = inputIdRef.current.value
-        let inputPw = inputPwRef.current.value
-        let inputNick = inputNickRef.current.value // 참조하고 있는 태그를 가져와주세요
-        // 얘들을 DB로 넘겨야함 근데 바로 DB로 연결 불가 -> node로 넘기자
-    
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
+
+  const handleJoin = async () => {
+    if (!form.doc_id || !form.passward || !form.doc_name) {
+      setError('ID, 비밀번호, 성명은 필수입니다.'); return
     }
+    if (form.passward !== form.pw_confirm) {
+      setError('비밀번호가 일치하지 않습니다.'); return
+    }
+    try {
+      const res = await axios.post(`${API}/join`, form)
+      if (res.data === 1 || res.data?.success) {
+        navigate('/login')
+      } else {
+        setError('회원가입에 실패했습니다. 다시 시도해주세요.')
+      }
+    } catch {
+      setError('서버 연결 실패. 잠시 후 다시 시도해주세요.')
+    }
+  }
+
+  const fields = [
+    { label: '의사 ID',  key: 'doc_id',       type: 'text' },
+    { label: 'PW',       key: 'passward',      type: 'password' },
+    { label: 'PW 확인',  key: 'pw_confirm',    type: 'password' },
+    { label: '의사 성명', key: 'doc_name',      type: 'text' },
+    { label: '병원명',   key: 'hospital_name', type: 'text' },
+    { label: '면허번호', key: 'license_no',    type: 'text' },
+  ]
+
   return (
-    <div>
-        <h1>회원가입 페이지</h1>
-        ID : <input type = "text" ref ={inputIdRef}></input>
-        <br></br>
-        PW : <input type = "password" ref ={inputPwRef}></input>
-        <br></br>
-        NICK : <input type = "text" ref ={inputNickRef}></input>
-        <br></br>
-        <button onClick = {tryJoin}>회원가입</button>
+    <div className="auth-page">
+      <div className="auth-brand">MentalLog</div>
+      <div className="auth-card">
+        <div className="auth-card-title">회원가입</div>
+
+        {fields.map(f => (
+          <div className="auth-field" key={f.key}>
+            <label>{f.label}</label>
+            <input
+              className="auth-input"
+              type={f.type}
+              value={form[f.key]}
+              onChange={set(f.key)}
+            />
+          </div>
+        ))}
+
+        {error && (
+          <div style={{ color: '#E53935', fontSize: 12, textAlign: 'center', marginTop: 8 }}>
+            {error}
+          </div>
+        )}
+
+        <div className="auth-btn-row">
+          <button className="btn btn-dark" style={{ padding: '8px 28px' }} onClick={handleJoin}>
+            가입하기
+          </button>
+          <button className="btn btn-light" style={{ padding: '8px 28px' }} onClick={() => navigate('/login')}>
+            취소
+          </button>
+        </div>
+      </div>
+
+      <div className="auth-link">
+        이미 계정이 있으신가요? <a href="/login">로그인</a>
+      </div>
     </div>
   )
 }
