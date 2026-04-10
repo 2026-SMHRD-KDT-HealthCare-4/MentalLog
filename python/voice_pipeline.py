@@ -13,6 +13,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import wave
 from pathlib import Path
 from collections import Counter
@@ -23,27 +24,13 @@ import joblib
 import librosa
 import numpy as np
 import requests
+
+from dotenv import load_dotenv
+
 from stress_main import calculate_stress
 
-import os 
-from dotenv import load_dotenv
 load_dotenv()
 
-
-# ── API 키 ──────────────────────────────────────────────────────────────
-DAGLO_API_KEY="API_KEY"
-
-
-
-
-
-# ── 상수 ────────────────────────────────────────────────────────────────
-PATIENT_SPEAKER_ID  = 1       # 화자분리 결과에서 환자 라벨 (추후 변경 가능)
-TOP_KEYWORD_COUNT   = 5       # 키워드 추출 상위 N개
-RECORD_SECONDS      = 60      # 녹음 구간 (초)
-SAMPLE_RATE         = 16000   # Hz, mono
-NCP_STORAGE_ENDPOINT = "https://kr.object.ncloudstorage.com"
-NODE_API            = "http://localhost:3001"
 
 # ── 로거 ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -52,6 +39,31 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("voice_pipeline")
+
+# ── API 키 (.env 에서 로드) ───────────────────────────────────────────────
+CLOVA_SPEECH_SECRET_KEY  = os.getenv("NCP_CLOVA_SPEECH_SECRET_KEY", "")
+CLOVA_SPEECH_INVOKE_URL  = os.getenv("NCP_CLOVA_SPEECH_URL", "")
+NAVER_STORAGE_ACCESS_KEY = os.getenv("NCP_ACCESS_KEY", "")
+NAVER_STORAGE_SECRET_KEY = os.getenv("NCP_SECRET_KEY", "")
+NAVER_STORAGE_BUCKET     = os.getenv("NCP_BUCKET_NAME", "")
+
+def _mask(value: str) -> str:
+    """앞 4자리만 표시하고 나머지는 마스킹."""
+    return value[:4] + "****" if len(value) >= 4 else "****"
+
+log.info(f"[ENV] CLOVA_SPEECH_SECRET_KEY  = {_mask(CLOVA_SPEECH_SECRET_KEY)}")
+log.info(f"[ENV] CLOVA_SPEECH_INVOKE_URL  = {_mask(CLOVA_SPEECH_INVOKE_URL)}")
+log.info(f"[ENV] NAVER_STORAGE_ACCESS_KEY = {_mask(NAVER_STORAGE_ACCESS_KEY)}")
+log.info(f"[ENV] NAVER_STORAGE_SECRET_KEY = {_mask(NAVER_STORAGE_SECRET_KEY)}")
+log.info(f"[ENV] NAVER_STORAGE_BUCKET     = {NAVER_STORAGE_BUCKET or '(미설정)'}")
+
+# ── 상수 ────────────────────────────────────────────────────────────────
+PATIENT_SPEAKER_ID  = 1       # 화자분리 결과에서 환자 라벨 (추후 변경 가능)
+TOP_KEYWORD_COUNT   = 5       # 키워드 추출 상위 N개
+RECORD_SECONDS      = 60      # 녹음 구간 (초)
+SAMPLE_RATE         = 16000   # Hz, mono
+NCP_STORAGE_ENDPOINT = "https://kr.object.ncloudstorage.com"
+NODE_API            = "http://localhost:3001"
 
 # ── 음성 ML 모델 로드 ────────────────────────────────────────────────────
 try:
