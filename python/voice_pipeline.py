@@ -14,6 +14,7 @@ import io
 import json
 import logging
 import wave
+from pathlib import Path
 from collections import Counter
 from datetime import datetime
 
@@ -22,15 +23,18 @@ import joblib
 import librosa
 import numpy as np
 import requests
-
 from stress_main import calculate_stress
 
+import os 
+from dotenv import load_dotenv
+load_dotenv()
+
+
 # ── API 키 ──────────────────────────────────────────────────────────────
-CLOVA_SPEECH_SECRET_KEY  = ""
-CLOVA_SPEECH_INVOKE_URL  = ""
-NAVER_STORAGE_ACCESS_KEY = ""
-NAVER_STORAGE_SECRET_KEY = ""
-NAVER_STORAGE_BUCKET     = ""
+DAGLO_API_KEY="API_KEY"
+
+
+
 
 
 # ── 상수 ────────────────────────────────────────────────────────────────
@@ -51,7 +55,7 @@ log = logging.getLogger("voice_pipeline")
 
 # ── 음성 ML 모델 로드 ────────────────────────────────────────────────────
 try:
-    _voice_model = joblib.load("voice_stress_model.pkl")
+    _voice_model = joblib.load(Path(__file__).parent / "voice_stress_model.pkl")
     log.info("음성 ML 모델 로드 성공")
 except Exception as _e:
     _voice_model = None
@@ -128,7 +132,7 @@ async def upload_to_naver_storage(audio_bytes: bytes, object_key: str) -> str:
             Key=object_key,
             Body=audio_bytes,
             ContentType="audio/wav",
-            ACL="public-read",
+            # ACL="public-read",
         )
         return f"{NCP_STORAGE_ENDPOINT}/{NAVER_STORAGE_BUCKET}/{object_key}"
 
@@ -467,7 +471,7 @@ if __name__ == "__main__":
     parser.add_argument("--threshold",    type=float, default=40.0)
     parser.add_argument("--hrv_stress",   type=float, default=50.0,
                         help="테스트 모드 전용 HRV 스트레스 값 (기본 50.0)")
-    parser.add_argument("--test_audio",   default=None,
+    parser.add_argument("--test_audio",   default=r"C:\Users\SMHRD\Downloads\018.감성대화말뭉치_sample\F_000001.wav",
                         help="테스트용 로컬 WAV 파일 경로. 지정 시 마이크 녹음 없이 해당 파일로 pipeline 1회 실행")
     args = parser.parse_args()
 
