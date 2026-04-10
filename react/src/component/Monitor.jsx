@@ -500,7 +500,7 @@ const Monitor = () => {
               </div>
               <div className="hrv-hr-box">
                 <div className="hrv-hr-labels">
-                  <span>HRV</span>
+                  <span>RMSSD</span>
                   <span>HR</span>
                 </div>
                 <div className="hrv-hr-values">

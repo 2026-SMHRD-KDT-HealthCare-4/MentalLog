@@ -50,7 +50,6 @@ const Report = () => {
   const [peakStress, setPeakStress] = useState(passedPeak ?? 0)
   const [threshold, setThreshold] = useState(passedThreshold ?? 0)
   const [rmssdData, setRmssdData] = useState([])
-  const [hrAvg, setHrAvg] = useState(null)
   const passedGraphUrl = location.state?.graphUrl || null
   const [graphUrl, setGraphUrl] = useState(passedGraphUrl)
   const reportTime = new Date().toLocaleString('ko-KR', {
@@ -239,16 +238,6 @@ const Report = () => {
               <div className="graph-title-group">
                 <h3>RMSSD 그래프</h3>
                 <p>실시간 환자 스트레스 수치 모니터링</p>
-              </div>
-              <div className="hrv-hr-box">
-                <div className="hrv-hr-labels">
-                  <span>HRV</span>
-                  <span>HR</span>
-                </div>
-                <div className="hrv-hr-values">
-                  <span>{rmssdData.length > 0 ? rmssdData[rmssdData.length - 1].value : '–'}</span>
-                  <span>{hrAvg ?? '–'}</span>
-                </div>
               </div>
             </div>
             <div className="graph-area">
