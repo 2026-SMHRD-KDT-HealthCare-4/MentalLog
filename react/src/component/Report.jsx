@@ -20,12 +20,6 @@ const GraphTooltip = ({ active, payload, label }) => {
   )
 }
 
-// 샘플 RMSSD (저장된 세션 데이터)
-const SAMPLE_RMSSD = Array.from({ length: 50 }, (_, i) => ({
-  x: i,
-  value: Math.round(30 + Math.sin(i * 0.4) * 12 + Math.random() * 8),
-}))
-
 const SAMPLE_KEYWORDS = [
   { id: 1, word: '가족', time: '12:35:24' },
   { id: 2, word: '다리', time: '12:38:14' },
@@ -47,6 +41,7 @@ const Report = () => {
   const passedTotal     = location.state?.totalStress ?? null
   const passedPeak      = location.state?.peakStress  ?? null
   const passedThreshold = location.state?.threshold   ?? null
+  const passedSessionId = location.state?.sessionId   || null
 
   const [patient, setPatient] = useState(null)
   const [notes, setNotes] = useState(passedNotes || '')
@@ -54,12 +49,36 @@ const Report = () => {
   const [cumulativeAvg, setCumulativeAvg] = useState(passedTotal ?? 0)
   const [peakStress, setPeakStress] = useState(passedPeak ?? 0)
   const [threshold, setThreshold] = useState(passedThreshold ?? 0)
-  const hrv = 62
-  const hr = 80
+  const [rmssdData, setRmssdData] = useState([])
+  const passedGraphUrl = location.state?.graphUrl || null
+  const [graphUrl, setGraphUrl] = useState(passedGraphUrl)
   const reportTime = new Date().toLocaleString('ko-KR', {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
+
+  // HRV DB 데이터 + Firebase graph_url 로드
+  const loadHrvData = (sessionId) => {
+    if (!sessionId) return
+    axios.get(`${API}/api/hrv/${sessionId}`).then(res => {
+      const rows = res.data || []
+      if (rows.length > 0) {
+        setRmssdData(rows)
+        const hrVals = rows.map(r => r.hr).filter(v => v > 0)
+        if (hrVals.length > 0) setHrAvg(Math.round(hrVals.reduce((a, b) => a + b, 0) / hrVals.length))
+      }
+    }).catch(() => {})
+
+    // Firebase에 업로드된 그래프 이미지 URL 가져오기
+    axios.get(`${API}/api/notes/detail/${sessionId}`).then(res => {
+      const d = res.data
+      if (!d) return
+      try {
+        const graphData = JSON.parse(d.stress_graph_data || '{}')
+        if (graphData.graph_url) setGraphUrl(graphData.graph_url)
+      } catch {}
+    }).catch(() => {})
+  }
 
   useEffect(() => {
     // 히스토리에서 특정 소견 조회
@@ -76,11 +95,19 @@ const Report = () => {
         setNotes(d.notes || '')
         setPeakStress(d.stress_peak || 0)
         setCumulativeAvg(d.stress_total || 0)
+        try {
+          const graphData = JSON.parse(d.stress_graph_data || '{}')
+          if (graphData.graph_url) setGraphUrl(graphData.graph_url)
+        } catch {}
+        loadHrvData(noteId)
       }).catch(() => {})
       return
     }
 
     // 진단 완료 후 진입 (state로 받은 값 우선)
+    // passedSessionId 우선 사용, 없으면 DB에서 조회
+    if (passedSessionId) loadHrvData(passedSessionId)
+
     Promise.all([
       axios.get(`${API}/api/patients/${patientId}`).catch(() => ({ data: null })),
       axios.get(`${API}/api/notes/${patientId}`).catch(() => ({ data: null })),
@@ -94,6 +121,7 @@ const Report = () => {
       if (notesRes.data) {
         if (notesRes.data.notes && !passedNotes) setNotes(notesRes.data.notes)
         if (passedPeak === null) setPeakStress(notesRes.data.stress_peak || 0)
+        if (!passedSessionId) loadHrvData(notesRes.data.session_id)
       }
       const visits = histRes.data || []
       if (visits.length > 0 && passedTotal === null) {
@@ -211,20 +239,17 @@ const Report = () => {
                 <h3>RMSSD 그래프</h3>
                 <p>실시간 환자 스트레스 수치 모니터링</p>
               </div>
-              <div className="hrv-hr-box">
-                <div className="hrv-hr-labels">
-                  <span>HRV</span>
-                  <span>HR</span>
-                </div>
-                <div className="hrv-hr-values">
-                  <span>{hrv}</span>
-                  <span>{hr}</span>
-                </div>
-              </div>
             </div>
             <div className="graph-area">
+              {graphUrl ? (
+                <img src={graphUrl} alt="RMSSD 그래프" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+              ) : rmssdData.length === 0 ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#BBB', fontSize: 13 }}>
+                  저장된 HRV 데이터가 없습니다
+                </div>
+              ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={SAMPLE_RMSSD} margin={{ top: 8, right: 16, left: -16, bottom: 0 }}>
+                <LineChart data={rmssdData} margin={{ top: 8, right: 16, left: -16, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="2 4" stroke="#F0F0F0" vertical={false} />
                   <XAxis
                     dataKey="x"
@@ -258,6 +283,7 @@ const Report = () => {
                   />
                 </LineChart>
               </ResponsiveContainer>
+              )}
             </div>
           </div>
         </div>

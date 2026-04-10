@@ -280,16 +280,29 @@ const Monitor = () => {
   // ── 진단 완료 → 레포트 ──
   const handleComplete = async () => {
     await handleSave()
+    
+    // ✅ await로 응답 기다리기
+    let graphUrl = null
+    try {
+        const res = await axios.post(`${PYTHON_API}/upload-graph`, {
+            session_id: sessionIdRef.current,
+        })
+        graphUrl = res.data?.graph_url || null
+    } catch (e) {}
+
+    // ✅ graphUrl을 state로 직접 넘겨버리기 (DB 조회 필요 없음)
     navigate(`/report/${patient?.pat_id}`, {
-      state: {
-        patient,
-        notes,
-        totalStress: totalStress ?? 0,
-        peakStress:  peakStress  ?? 0,
-        threshold:   threshold   ?? 0,
-      }
+        state: {
+            patient,
+            notes,
+            totalStress: totalStress ?? 0,
+            peakStress:  peakStress  ?? 0,
+            threshold:   threshold   ?? 0,
+            sessionId:   sessionIdRef.current,
+            graphUrl,   // ✅ 추가
+        }
     })
-  }
+}
 
   const currentPatient = WAITING_PATIENTS[currentPatientIdx]
 
@@ -487,7 +500,7 @@ const Monitor = () => {
               </div>
               <div className="hrv-hr-box">
                 <div className="hrv-hr-labels">
-                  <span>HRV</span>
+                  <span>RMSSD</span>
                   <span>HR</span>
                 </div>
                 <div className="hrv-hr-values">
