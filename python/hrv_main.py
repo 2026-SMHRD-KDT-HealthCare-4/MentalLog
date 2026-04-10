@@ -13,6 +13,17 @@ import neurokit2 as nk
 import matplotlib
 matplotlib.use('Agg')   # GUI 없는 환경에서 렌더링
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+# 한글 폰트 설정 (Windows: 맑은 고딕)
+_korean_font = None
+for _fname in ['Malgun Gothic', 'NanumGothic', 'AppleGothic', 'Nanum Gothic']:
+    if any(_fname.lower() in f.name.lower() for f in fm.fontManager.ttflist):
+        _korean_font = _fname
+        break
+if _korean_font:
+    plt.rcParams['font.family'] = _korean_font
+plt.rcParams['axes.unicode_minus'] = False  # 마이너스 기호 깨짐 방지
 import io
 import firebase_admin
 from firebase_admin import credentials, storage
