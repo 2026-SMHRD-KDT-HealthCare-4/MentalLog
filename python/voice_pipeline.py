@@ -19,9 +19,9 @@ from pathlib import Path
 from collections import Counter
 from datetime import datetime
 
-import boto3
+import time
+
 import joblib
-import librosa
 import numpy as np
 import requests
 
@@ -41,37 +41,47 @@ logging.basicConfig(
 log = logging.getLogger("voice_pipeline")
 
 # ── API 키 (.env 에서 로드) ───────────────────────────────────────────────
-CLOVA_SPEECH_SECRET_KEY  = os.getenv("NCP_CLOVA_SPEECH_SECRET_KEY", "")
-CLOVA_SPEECH_INVOKE_URL  = os.getenv("NCP_CLOVA_SPEECH_URL", "")
-NAVER_STORAGE_ACCESS_KEY = os.getenv("NCP_ACCESS_KEY", "")
-NAVER_STORAGE_SECRET_KEY = os.getenv("NCP_SECRET_KEY", "")
-NAVER_STORAGE_BUCKET     = os.getenv("NCP_BUCKET_NAME", "")
+DAGLO_API_KEY = os.getenv("DAGLO_API_KEY", "")
 
 def _mask(value: str) -> str:
     """앞 4자리만 표시하고 나머지는 마스킹."""
     return value[:4] + "****" if len(value) >= 4 else "****"
 
-log.info(f"[ENV] CLOVA_SPEECH_SECRET_KEY  = {_mask(CLOVA_SPEECH_SECRET_KEY)}")
-log.info(f"[ENV] CLOVA_SPEECH_INVOKE_URL  = {_mask(CLOVA_SPEECH_INVOKE_URL)}")
-log.info(f"[ENV] NAVER_STORAGE_ACCESS_KEY = {_mask(NAVER_STORAGE_ACCESS_KEY)}")
-log.info(f"[ENV] NAVER_STORAGE_SECRET_KEY = {_mask(NAVER_STORAGE_SECRET_KEY)}")
-log.info(f"[ENV] NAVER_STORAGE_BUCKET     = {NAVER_STORAGE_BUCKET or '(미설정)'}")
+log.info(f"[ENV] DAGLO_API_KEY = {_mask(DAGLO_API_KEY)}")
 
 # ── 상수 ────────────────────────────────────────────────────────────────
 PATIENT_SPEAKER_ID  = 1       # 화자분리 결과에서 환자 라벨 (추후 변경 가능)
 TOP_KEYWORD_COUNT   = 5       # 키워드 추출 상위 N개
 RECORD_SECONDS      = 60      # 녹음 구간 (초)
 SAMPLE_RATE         = 16000   # Hz, mono
-NCP_STORAGE_ENDPOINT = "https://kr.object.ncloudstorage.com"
+DAGLO_STT_ASYNC_URL = "https://apis.daglo.ai/stt/v1/async/transcripts"
 NODE_API            = "http://localhost:3001"
 
 # ── 음성 ML 모델 로드 ────────────────────────────────────────────────────
+# voice_stress_model.pkl 구조: {"model_name": str, "rf_model": RFRegressor, "kote_labels": list}
+# 흐름: 텍스트 → KoTE (44개 감정 확률) → rf_model → 스트레스 점수
 try:
-    _voice_model = joblib.load(Path(__file__).parent / "voice_stress_model.pkl")
-    log.info("음성 ML 모델 로드 성공")
+    _bundle      = joblib.load(Path(__file__).parent / "voice_stress_model.pkl")
+    _rf_model    = _bundle["rf_model"]
+    _kote_labels = _bundle["kote_labels"]
+    _kote_name   = _bundle["model_name"]
+    log.info(f"음성 ML 모델 로드 성공 (KoTE: {_kote_name})")
 except Exception as _e:
-    _voice_model = None
+    _bundle = _rf_model = _kote_labels = _kote_name = None
     log.warning(f"음성 ML 모델 로드 실패: {_e}")
+
+# ── KoTE 감정 분류 파이프라인 로드 ───────────────────────────────────────
+try:
+    from transformers import pipeline as hf_pipeline
+    _kote_pipe = hf_pipeline(
+        "text-classification",
+        model=_kote_name,
+        top_k=None,   # 44개 감정 전체 확률 반환
+    )
+    log.info("KoTE 파이프라인 로드 성공")
+except Exception as _e:
+    _kote_pipe = None
+    log.warning(f"KoTE 파이프라인 로드 실패: {_e}")
 
 # ── 한국어 형태소 분석기 (kiwipiepy 우선, 없으면 정규식 폴백) ──────────────
 try:
@@ -121,78 +131,71 @@ async def record_chunk() -> bytes:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 2. 네이버 오브젝트 스토리지 업로드
+# 2. Daglo STT (비동기 — 직접 파일 전송 + 폴링)
 # ════════════════════════════════════════════════════════════════════════
 
-def _s3_client():
-    return boto3.client(
-        "s3",
-        endpoint_url=NCP_STORAGE_ENDPOINT,
-        aws_access_key_id=NAVER_STORAGE_ACCESS_KEY,
-        aws_secret_access_key=NAVER_STORAGE_SECRET_KEY,
-    )
-
-
-async def upload_to_naver_storage(audio_bytes: bytes, object_key: str) -> str:
-    """WAV bytes 를 NCP Object Storage 에 업로드하고 공개 URL 반환."""
-    loop = asyncio.get_event_loop()
-
-    def _upload():
-        s3 = _s3_client()
-        s3.put_object(
-            Bucket=NAVER_STORAGE_BUCKET,
-            Key=object_key,
-            Body=audio_bytes,
-            ContentType="audio/wav",
-            # ACL="public-read",
-        )
-        return f"{NCP_STORAGE_ENDPOINT}/{NAVER_STORAGE_BUCKET}/{object_key}"
-
-    url = await loop.run_in_executor(None, _upload)
-    log.info(f"[Storage] 업로드 완료 → {url}")
-    return url
-
-
-# ════════════════════════════════════════════════════════════════════════
-# 3. 네이버 클로바 Speech (장문분석 + 화자분리)
-# ════════════════════════════════════════════════════════════════════════
-
-async def call_clova_speech(audio_url: str) -> dict:
+async def call_daglo_stt(audio_bytes: bytes) -> dict:
     """
-    NCP Object Storage URL 로 Clova Speech 장문분석 + 화자분리 호출.
-    반환: Clova Speech 응답 JSON (segments 포함)
+    Daglo async STT: WAV bytes 를 직접 전송 (스토리지 불필요).
+    화자분리(diarization) 포함.
+    반환: Daglo STT 응답 JSON (sttResult.segments 포함)
     """
     headers = {
-        "Accept":               "application/json;UTF-8",
-        "Content-Type":         "application/json;UTF-8",
-        "X-CLOVASPEECH-API-KEY": CLOVA_SPEECH_SECRET_KEY,
+        "Authorization": f"Bearer {DAGLO_API_KEY}",
     }
-    payload = {
-        "url":      audio_url,
-        "language": "ko-KR",
-        "completion": "sync",
-        "diarization": {
-            "enable":           True,
-            "speakerCountMin":  2,
-            "speakerCountMax":  2,
+    config = {
+        "sttConfig": {
+            "speakerDiarization": {"enable": True},
         },
-        "timestamp": {"enable": True},
     }
 
     loop = asyncio.get_event_loop()
 
-    def _post():
+    # ── 작업 제출 ──
+    def _submit():
+        files = {
+            "file":   ("audio.wav", audio_bytes, "audio/wav"),
+            "config": (None, json.dumps(config), "application/json"),
+        }
         resp = requests.post(
-            f"{CLOVA_SPEECH_INVOKE_URL}/recognizer/url",
+            DAGLO_STT_ASYNC_URL,
             headers=headers,
-            json=payload,
+            files=files,
             timeout=60,
         )
         resp.raise_for_status()
         return resp.json()
 
-    result = await loop.run_in_executor(None, _post)
-    log.info(f"[Clova] 화자분리 완료 — segments: {len(result.get('segments', []))}")
+    submit_result = await loop.run_in_executor(None, _submit)
+    rid = submit_result.get("rid")
+    if not rid:
+        raise ValueError(f"[Daglo] 작업 제출 실패: {submit_result}")
+    log.info(f"[Daglo] 작업 제출 완료 — rid={rid}")
+
+    # ── 폴링 (최대 5분, 5초 간격) ──
+    _DONE    = {"transcribed"}
+    _FAILED  = {"failed", "error"}
+
+    def _poll():
+        poll_url = f"{DAGLO_STT_ASYNC_URL}/{rid}"
+        for _ in range(60):
+            time.sleep(5)
+            resp = requests.get(poll_url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data   = resp.json()
+            status = data.get("status", "")
+            if status in _DONE:
+                return data
+            if status in _FAILED:
+                raise RuntimeError(f"[Daglo] STT 실패 — status={status}")
+            log.info(f"[Daglo] 처리 중... status={status}")
+        raise TimeoutError("[Daglo] STT 폴링 타임아웃 (5분)")
+
+    result      = await loop.run_in_executor(None, _poll)
+    stt_results = result.get("sttResults", [])
+    words       = stt_results[0].get("words", []) if stt_results else []
+    speakers    = sorted(set(w.get("speaker", "?") for w in words))
+    log.info(f"[Daglo] STT 완료 — 단어 수: {len(words)}, 화자: {speakers}")
     return result
 
 
@@ -200,61 +203,68 @@ async def call_clova_speech(audio_url: str) -> dict:
 # 4. 환자 발화 추출
 # ════════════════════════════════════════════════════════════════════════
 
-def extract_patient_utterances(clova_result: dict) -> str:
+def extract_patient_utterances(daglo_result: dict) -> str:
     """
-    Clova Speech 결과에서 PATIENT_SPEAKER_ID 화자 발화만 추출해 텍스트로 반환.
-    segments[].speaker.label 이 str(PATIENT_SPEAKER_ID) 인 것만 수집.
+    Daglo STT 결과에서 PATIENT_SPEAKER_ID 화자 발화만 추출해 텍스트로 반환.
+    words[].speaker 가 str(PATIENT_SPEAKER_ID) 인 단어들만 이어붙임.
+    화자분리 결과가 없거나 환자 발화가 없으면 전체 transcript 를 폴백으로 사용.
     """
-    segments = clova_result.get("segments", [])
-    patient_label = str(PATIENT_SPEAKER_ID)
-    utterances = [
-        seg.get("text", "")
-        for seg in segments
-        if seg.get("speaker", {}).get("label") == patient_label
-    ]
-    return " ".join(utterances).strip()
+    stt_results = daglo_result.get("sttResults", [])
+    stt         = stt_results[0] if stt_results else {}
+    words       = stt.get("words", [])
+
+    # ── 화자분리 결과 있을 때 ──
+    if words and any(w.get("speaker") for w in words):
+        speakers = sorted(set(w.get("speaker", "?") for w in words))
+        log.info(f"[STT] 화자분리 완료 — 화자 목록: {speakers}")
+        patient_label = str(PATIENT_SPEAKER_ID)
+        patient_words = [
+            w.get("word", "")
+            for w in words
+            if str(w.get("speaker", "")) == patient_label
+        ]
+        text = "".join(patient_words).strip()
+        if text:
+            return text
+
+    # ── 폴백: 화자분리 실패 or 환자 발화 없음 → 전체 transcript 사용 ──
+    fallback = stt.get("transcript", "")
+    if fallback:
+        log.info("[STT] 화자분리 결과 없음 → 전체 transcript 폴백 사용")
+    return fallback.strip()
 
 
 # ════════════════════════════════════════════════════════════════════════
 # 5. 음성 스트레스 ML
 # ════════════════════════════════════════════════════════════════════════
 
-def run_voice_ml(patient_text: str, audio_bytes: bytes) -> float:
+def run_voice_ml(patient_text: str) -> float:
     """
-    음성 스트레스 ML 모델 실행. 텍스트 기반으로 예측 시도.
-    모델이 없거나 실패 시 MFCC(오디오) 기반 폴백.
+    음성 스트레스 ML 모델 실행.
+    흐름: 텍스트 → KoTE 44개 감정 확률 → RF Regressor → 스트레스 점수 (0~100)
+    텍스트가 없거나 모델 로드 실패 시 0.0 반환.
     반환: 0~100 float
     """
-    if _voice_model is None:
+    if _rf_model is None or _kote_pipe is None:
+        return 0.0
+    if not patient_text.strip():
         return 0.0
 
-    # ── 텍스트 기반 예측 (Pipeline with vectorizer) ──
     try:
-        pred = _voice_model.predict([patient_text])
-        # 확률값 반환 가능 시 사용
-        if hasattr(_voice_model, "predict_proba"):
-            proba = _voice_model.predict_proba([patient_text])[0]
-            # 클래스 순서에서 'stressed' 또는 양성 클래스 인덱스를 찾음
-            classes = list(_voice_model.classes_)
-            stress_idx = next(
-                (i for i, c in enumerate(classes) if "stress" in str(c).lower()),
-                len(classes) - 1,
-            )
-            return round(float(proba[stress_idx]) * 100, 2)
-        # 라벨 → float 변환
-        label = str(pred[0]).lower()
-        return 75.0 if "stress" in label else 25.0
-    except Exception:
-        pass
+        # ── KoTE: 텍스트 → 44개 감정 확률 ──
+        kote_result = _kote_pipe(patient_text)[0]   # [{"label": ..., "score": ...}, ...]
+        # kote_labels 순서에 맞게 확률 배열 정렬
+        score_map = {item["label"]: item["score"] for item in kote_result}
+        feat = np.array(
+            [score_map.get(label, 0.0) for label in _kote_labels],
+            dtype=np.float32,
+        ).reshape(1, -1)
 
-    # ── MFCC 기반 폴백 ──
-    try:
-        y, sr = librosa.load(io.BytesIO(audio_bytes), sr=None, duration=5.0)
-        mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-        feat  = np.mean(mfccs.T, axis=0).reshape(1, -1)
-        pred  = _voice_model.predict(feat)
-        label = str(pred[0]).lower()
-        return 75.0 if "stress" in label else 25.0
+        # ── RF Regressor: 감정 확률 → 스트레스 점수 ──
+        stress = float(_rf_model.predict(feat)[0])
+        stress = max(0.0, min(100.0, stress))   # 0~100 클리핑
+        return round(stress, 2)
+
     except Exception as e:
         log.warning(f"[VoiceML] 예측 실패: {e}")
         return 0.0
@@ -329,19 +339,15 @@ async def process_chunk(
     log.info(f"[Chunk {chunk_label}] 처리 시작 (hrv_stress={hrv_stress:.1f})")
 
     try:
-        # ── 2. 스토리지 업로드 ──
-        object_key = f"audio/{session_id}/{chunk_label.replace(':','')}.wav"
-        audio_url  = await upload_to_naver_storage(audio_bytes, object_key)
-
-        # ── 3. Clova Speech ──
-        clova_result = await call_clova_speech(audio_url)
+        # ── 2 & 3. Daglo STT (직접 파일 전송 + 폴링) ──
+        daglo_result = await call_daglo_stt(audio_bytes)
 
         # ── 4. 환자 발화 추출 ──
-        patient_text = extract_patient_utterances(clova_result)
-        log.info(f"[Chunk {chunk_label}] 환자 발화: {patient_text[:60]}…")
+        patient_text = extract_patient_utterances(daglo_result)
+        log.info(f"[Chunk {chunk_label}] 환자 발화 전문:\n{patient_text}")
 
         # ── 5. 음성 ML ──
-        voice_stress = run_voice_ml(patient_text, audio_bytes)
+        voice_stress = run_voice_ml(patient_text)
         log.info(f"[Chunk {chunk_label}] 음성 ML 완료 — voice_stress={voice_stress:.1f}")
 
         # ── 6 & 7. 피크 감지 → 키워드/문장 ──
@@ -483,7 +489,7 @@ if __name__ == "__main__":
     parser.add_argument("--threshold",    type=float, default=40.0)
     parser.add_argument("--hrv_stress",   type=float, default=50.0,
                         help="테스트 모드 전용 HRV 스트레스 값 (기본 50.0)")
-    parser.add_argument("--test_audio",   default=r"C:\Users\SMHRD\Downloads\018.감성대화말뭉치_sample\F_000001.wav",
+    parser.add_argument("--test_audio",   default=r"C:\Users\SMHRD\Downloads\업무처리\쇼핑_25.m4a",
                         help="테스트용 로컬 WAV 파일 경로. 지정 시 마이크 녹음 없이 해당 파일로 pipeline 1회 실행")
     args = parser.parse_args()
 
