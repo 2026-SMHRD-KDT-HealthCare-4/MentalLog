@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import wave
+from pathlib import Path
 from collections import Counter
 from datetime import datetime
 
@@ -23,11 +24,27 @@ import joblib
 import librosa
 import numpy as np
 import requests
-from dotenv import load_dotenv
-
 from stress_main import calculate_stress
 
+import os 
+from dotenv import load_dotenv
 load_dotenv()
+
+
+# ── API 키 ──────────────────────────────────────────────────────────────
+DAGLO_API_KEY="API_KEY"
+
+
+
+
+
+# ── 상수 ────────────────────────────────────────────────────────────────
+PATIENT_SPEAKER_ID  = 1       # 화자분리 결과에서 환자 라벨 (추후 변경 가능)
+TOP_KEYWORD_COUNT   = 5       # 키워드 추출 상위 N개
+RECORD_SECONDS      = 60      # 녹음 구간 (초)
+SAMPLE_RATE         = 16000   # Hz, mono
+NCP_STORAGE_ENDPOINT = "https://kr.object.ncloudstorage.com"
+NODE_API            = "http://localhost:3001"
 
 # ── 로거 ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -64,7 +81,7 @@ NODE_API            = "http://localhost:3001"
 
 # ── 음성 ML 모델 로드 ────────────────────────────────────────────────────
 try:
-    _voice_model = joblib.load("voice_stress_model.pkl")
+    _voice_model = joblib.load(Path(__file__).parent / "voice_stress_model.pkl")
     log.info("음성 ML 모델 로드 성공")
 except Exception as _e:
     _voice_model = None
@@ -480,7 +497,7 @@ if __name__ == "__main__":
     parser.add_argument("--threshold",    type=float, default=40.0)
     parser.add_argument("--hrv_stress",   type=float, default=50.0,
                         help="테스트 모드 전용 HRV 스트레스 값 (기본 50.0)")
-    parser.add_argument("--test_audio",   default=None,
+    parser.add_argument("--test_audio",   default=r"C:\Users\SMHRD\Downloads\018.감성대화말뭉치_sample\F_000001.wav",
                         help="테스트용 로컬 WAV 파일 경로. 지정 시 마이크 녹음 없이 해당 파일로 pipeline 1회 실행")
     args = parser.parse_args()
 
