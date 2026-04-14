@@ -46,14 +46,6 @@ const WAITING_PATIENTS = [
 ]
 
 
-const SAMPLE_KEYWORDS = [
-  { id: 1, word: '가족', time: '12:35:24', content: "가족들이 뭐 대화도 안되고 머 그래서 힘들어요 → 동의 문장 그런거 출력" },
-  { id: 2, word: '다리', time: '12:38:14', content: "다리가 계속 저리고 아파요. 잠을 못자서 그런 것 같아요." },
-  { id: 3, word: '돈',   time: '12:40:24', content: "돈 걱정이 많아요. 요즘 생활비가 너무 부족해서요." },
-  { id: 4, word: '얼굴', time: '12:52:12', content: "얼굴이 자꾸 붉어지고 두근거려요. 불안할 때마다 그래요." },
-  { id: 5, word: '성적', time: '12:53:58', content: "성적이 떨어질까봐 너무 불안해요. 공부를 해도 머릿속에 안 들어와요." },
-  { id: 6, word: '연애', time: '12:56:32', content: "연애 때문에 스트레스를 많이 받고 있어요. 감정 조절이 안 돼요." },
-]
 
 const Monitor = () => {
   const { patientId } = useParams()
@@ -83,7 +75,7 @@ const Monitor = () => {
 
   // 스트레스 지수
   const [threshold, setThreshold] = useState(null) // RMSSD 기반 임계치 (ms)
-  const voiceStress = 0                             // 음성 스트레스 placeholder (0~100)
+  const [voiceStress, setVoiceStress] = useState(0) // 음성 스트레스 (voice_pipeline 에서 수신)
   const [hrv, setHrv] = useState(52)
   const [hr, setHr] = useState(72)
 
@@ -95,19 +87,34 @@ const Monitor = () => {
   const [prescriptions, setPrescriptions] = useState([])
 
   // 키워드
-  const [keywords, setKeywords] = useState(SAMPLE_KEYWORDS)
+  const [keywords, setKeywords] = useState([])
   const [selectedKw, setSelectedKw] = useState(null)
   const [isSaved, setIsSaved] = useState(false)
 
   // 의사 소견
   const [notes, setNotes] = useState('')
 
-  // ── 환자 입실 시 베이스라인 리셋 + 새 세션 ID 생성 ──
+  // ── 환자 입실 시 베이스라인 리셋 + 새 세션 ID 생성 + 음성 파이프라인 시작 ──
   useEffect(() => {
     axios.post(`${PYTHON_API}/reset-baseline`).catch(() => {})
-    sessionIdRef.current = Date.now()
+    const newSessionId = Date.now()
+    sessionIdRef.current = newSessionId
     setBaselineRmssd(null)
     setBaselineReady(false)
+
+    // 음성 파이프라인 시작 (pss_score는 로드 후 업데이트되지만 기본값으로 먼저 시작)
+    axios.post(`${PYTHON_API}/start-voice`, {
+      session_id: String(newSessionId),
+      pss_score:  pssScoreRef.current || 0,
+      threshold:  70,
+    }).catch(() => {})
+
+    // 컴포넌트 언마운트 또는 환자 변경 시 음성 파이프라인 중지
+    return () => {
+      axios.post(`${PYTHON_API}/stop-voice`, {
+        session_id: String(newSessionId),
+      }).catch(() => {})
+    }
   }, [patientId])
 
   // ── 환자 로드 ──
@@ -214,6 +221,37 @@ const Monitor = () => {
   }, [sessionActive])
 
 
+  // ── 음성 파이프라인 결과 폴링 (30초마다) ──
+  useEffect(() => {
+    if (!sessionActive) return
+    const poll = async () => {
+      try {
+        const res = await axios.get(`${API}/api/voice-stress/${sessionIdRef.current}`)
+        if (!res.data) return
+        const { voice_stress, keywords_history } = res.data
+
+        // 음성 스트레스 갱신
+        if (voice_stress != null) {
+          setVoiceStress(voice_stress)
+          // 총합 스트레스 재계산
+          const total = calcTotalStress(lastHrvStressRef.current, voice_stress, pssScoreRef.current)
+          setTotalStress(total)
+          setPeakStress(prev => (prev === null || total > prev) ? total : prev)
+        }
+
+        // 키워드 갱신
+        if (keywords_history && keywords_history.length > 0) {
+          setKeywords(keywords_history)
+        }
+      } catch (e) {
+        // 연결 실패 시 무시
+      }
+    }
+    poll() // 최초 1회 즉시 실행
+    const interval = setInterval(poll, 30000) // 30초마다 갱신
+    return () => clearInterval(interval)
+  }, [sessionActive])
+
   // ── PSS 임계치 계산 + 즉시 원형 반영 ──
   const handlePssSubmit = () => {
     const pss = Number(pssInput)
@@ -227,6 +265,11 @@ const Monitor = () => {
     const total = calcTotalStress(lastHrvStressRef.current, voiceStress, pss)
     setTotalStress(total)
     setPeakStress(prev => (prev === null || total > prev) ? total : prev)
+    // 음성 파이프라인 임계치 동적 업데이트
+    axios.post(`${PYTHON_API}/update-voice`, {
+      session_id: String(sessionIdRef.current),
+      threshold: newThreshold,
+    }).catch(() => {})
   }
 
   // ── 환자 전환 ──
@@ -299,7 +342,8 @@ const Monitor = () => {
             peakStress:  peakStress  ?? 0,
             threshold:   threshold   ?? 0,
             sessionId:   sessionIdRef.current,
-            graphUrl,   // ✅ 추가
+            graphUrl,
+            keywords,   // 실시간 키워드 (word, time, content 포함)
         }
     })
 }

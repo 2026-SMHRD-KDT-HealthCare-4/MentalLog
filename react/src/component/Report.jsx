@@ -20,14 +20,6 @@ const GraphTooltip = ({ active, payload, label }) => {
   )
 }
 
-const SAMPLE_KEYWORDS = [
-  { id: 1, word: '가족', time: '12:35:24' },
-  { id: 2, word: '다리', time: '12:38:14' },
-  { id: 3, word: '돈',   time: '12:40:24' },
-  { id: 4, word: '얼굴', time: '12:52:12' },
-  { id: 5, word: '성적', time: '12:53:58' },
-  { id: 6, word: '연애', time: '12:56:32' },
-]
 
 const Report = () => {
   const { patientId } = useParams()
@@ -42,10 +34,12 @@ const Report = () => {
   const passedPeak      = location.state?.peakStress  ?? null
   const passedThreshold = location.state?.threshold   ?? null
   const passedSessionId = location.state?.sessionId   || null
+  const passedKeywords  = location.state?.keywords    || []
 
   const [patient, setPatient] = useState(null)
   const [notes, setNotes] = useState(passedNotes || '')
-  const [summary, setSummary] = useState('')
+  const keywords = passedKeywords
+  const summary = keywords.filter(kw => kw.content).map(kw => `[${kw.word}] ${kw.content}`).join('\n\n')
   const [cumulativeAvg, setCumulativeAvg] = useState(passedTotal ?? 0)
   const [peakStress, setPeakStress] = useState(passedPeak ?? 0)
   const [threshold, setThreshold] = useState(passedThreshold ?? 0)
@@ -221,14 +215,18 @@ const Report = () => {
               <div className="keywords-section-header">
                 <span>주요 키워드</span>
               </div>
-              <div className="keyword-grid">
-                {SAMPLE_KEYWORDS.map(kw => (
-                  <div key={kw.id} className="kw-chip">
-                    <span className="kw-word">{kw.word}</span>
-                    <span className="kw-time">{kw.time}</span>
-                  </div>
-                ))}
-              </div>
+              {keywords.length === 0 ? (
+                <div className="empty-state">추출된 키워드가 없습니다</div>
+              ) : (
+                <div className="keyword-grid">
+                  {keywords.map(kw => (
+                    <div key={kw.id} className="kw-chip">
+                      <span className="kw-word">{kw.word}</span>
+                      <span className="kw-time">{kw.time}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -241,48 +239,70 @@ const Report = () => {
               </div>
             </div>
             <div className="graph-area">
-              {graphUrl ? (
+              {rmssdData.length > 0 ? (() => {
+                // 키워드 타임스탬프 → RMSSD x 인덱스 매핑
+                const kwMarkers = keywords
+                  .filter(kw => kw.time)
+                  .map(kw => {
+                    const hhmm = kw.time.slice(0, 5) // 'HH:MM:SS' → 'HH:MM'
+                    const match = rmssdData.find(d => d.label === hhmm)
+                    return match ? { x: match.x, word: kw.word } : null
+                  })
+                  .filter(Boolean)
+                return (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={rmssdData} margin={{ top: 20, right: 16, left: -16, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="2 4" stroke="#F0F0F0" vertical={false} />
+                      <XAxis
+                        dataKey="x"
+                        tick={{ fill: '#BBB', fontSize: 10 }}
+                        tickLine={false}
+                        axisLine={{ stroke: '#EEE' }}
+                        interval={4}
+                      />
+                      <YAxis
+                        domain={[0, 65]}
+                        ticks={[0, 15, 30, 45, 60]}
+                        tick={{ fill: '#BBB', fontSize: 10 }}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <Tooltip content={<GraphTooltip />} />
+                      {threshold > 0 && (
+                        <ReferenceLine y={threshold} stroke="#E53935" strokeWidth={1.5}
+                          strokeDasharray="4 2"
+                          label={{ value: `임계치 ${threshold}ms`, position: 'insideTopRight', fontSize: 10, fill: '#E53935' }}
+                        />
+                      )}
+                      {/* 키워드 타임스탬프 수직선 */}
+                      {kwMarkers.map((m, i) => (
+                        <ReferenceLine
+                          key={i}
+                          x={m.x}
+                          stroke="#FF7043"
+                          strokeWidth={1.5}
+                          strokeDasharray="3 2"
+                          label={{ value: m.word, position: 'top', fontSize: 9, fill: '#FF7043' }}
+                        />
+                      ))}
+                      <Line
+                        type="monotone"
+                        dataKey="value"
+                        stroke="#333333"
+                        strokeWidth={1.8}
+                        dot={false}
+                        activeDot={{ r: 4, fill: '#333', stroke: 'white', strokeWidth: 2 }}
+                        isAnimationActive={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )
+              })() : graphUrl ? (
                 <img src={graphUrl} alt="RMSSD 그래프" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-              ) : rmssdData.length === 0 ? (
+              ) : (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#BBB', fontSize: 13 }}>
                   저장된 HRV 데이터가 없습니다
                 </div>
-              ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={rmssdData} margin={{ top: 8, right: 16, left: -16, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="2 4" stroke="#F0F0F0" vertical={false} />
-                  <XAxis
-                    dataKey="x"
-                    tick={{ fill: '#BBB', fontSize: 10 }}
-                    tickLine={false}
-                    axisLine={{ stroke: '#EEE' }}
-                    interval={4}
-                  />
-                  <YAxis
-                    domain={[0, 65]}
-                    ticks={[0, 15, 30, 45, 60]}
-                    tick={{ fill: '#BBB', fontSize: 10 }}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <Tooltip content={<GraphTooltip />} />
-                  {threshold > 0 && (
-                    <ReferenceLine y={threshold} stroke="#E53935" strokeWidth={1.5}
-                      strokeDasharray="4 2"
-                      label={{ value: `임계치 ${threshold}ms`, position: 'insideTopRight', fontSize: 10, fill: '#E53935' }}
-                    />
-                  )}
-                  <Line
-                    type="monotone"
-                    dataKey="value"
-                    stroke="#333333"
-                    strokeWidth={1.8}
-                    dot={false}
-                    activeDot={{ r: 4, fill: '#333', stroke: 'white', strokeWidth: 2 }}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
               )}
             </div>
           </div>
@@ -296,13 +316,12 @@ const Report = () => {
               <span className="panel-title">주요 상황 요약</span>
             </div>
             <div className="report-summary-body">
-              {summary || (
-                <span style={{ color: '#CCC' }}>저장된 요약이 없습니다.</span>
-              )}
-              {summary && (
-                <div style={{ fontSize: 11, color: '#AAA', marginTop: 8 }}>
-                  {new Date().toLocaleString('ko-KR')}
+              {summary ? (
+                <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.8, color: '#333' }}>
+                  {summary}
                 </div>
+              ) : (
+                <span style={{ color: '#CCC' }}>저장된 요약이 없습니다.</span>
               )}
             </div>
           </div>

@@ -70,18 +70,27 @@ except Exception as _e:
     _bundle = _rf_model = _kote_labels = _kote_name = None
     log.warning(f"음성 ML 모델 로드 실패: {_e}")
 
-# ── KoTE 감정 분류 파이프라인 로드 ───────────────────────────────────────
-try:
-    from transformers import pipeline as hf_pipeline
-    _kote_pipe = hf_pipeline(
-        "text-classification",
-        model=_kote_name,
-        top_k=None,   # 44개 감정 전체 확률 반환
-    )
-    log.info("KoTE 파이프라인 로드 성공")
-except Exception as _e:
-    _kote_pipe = None
-    log.warning(f"KoTE 파이프라인 로드 실패: {_e}")
+# ── KoTE 파이프라인: 처음 사용 시 로드 (lazy) ────────────────────────────
+_kote_pipe = None
+
+def _get_kote_pipe():
+    """KoTE 파이프라인을 처음 호출 시에만 로드 (lazy loading)."""
+    global _kote_pipe
+    if _kote_pipe is not None:
+        return _kote_pipe
+    if _kote_name is None:
+        return None
+    try:
+        from transformers import pipeline as hf_pipeline
+        _kote_pipe = hf_pipeline(
+            "text-classification",
+            model=_kote_name,
+            top_k=None,
+        )
+        log.info("KoTE 파이프라인 로드 성공")
+    except Exception as _e:
+        log.warning(f"KoTE 파이프라인 로드 실패: {_e}")
+    return _kote_pipe
 
 # ── 한국어 형태소 분석기 (kiwipiepy 우선, 없으면 정규식 폴백) ──────────────
 try:
@@ -153,14 +162,18 @@ async def call_daglo_stt(audio_bytes: bytes) -> dict:
 
     # ── 작업 제출 ──
     def _submit():
+        # config를 data 파라미터로 분리 (multipart form의 text field로 전송)
         files = {
-            "file":   ("audio.wav", audio_bytes, "audio/wav"),
-            "config": (None, json.dumps(config), "application/json"),
+            "file": ("audio.wav", audio_bytes, "audio/wav"),
+        }
+        data = {
+            "config": json.dumps(config),
         }
         resp = requests.post(
             DAGLO_STT_ASYNC_URL,
             headers=headers,
             files=files,
+            data=data,
             timeout=60,
         )
         resp.raise_for_status()
@@ -194,7 +207,16 @@ async def call_daglo_stt(audio_bytes: bytes) -> dict:
     result      = await loop.run_in_executor(None, _poll)
     stt_results = result.get("sttResults", [])
     words       = stt_results[0].get("words", []) if stt_results else []
-    speakers    = sorted(set(w.get("speaker", "?") for w in words))
+
+    # 화자 필드 디버그 로그 (첫 3개 단어 구조 출력)
+    if words:
+        log.info(f"[Daglo] 첫 번째 단어 구조: {words[0]}")
+
+    # speaker 필드 존재 여부로 체크 (0도 유효한 화자 ID이므로 is not None 사용)
+    speakers = sorted(set(
+        w.get("speaker", "?") if w.get("speaker") is not None else "?"
+        for w in words
+    ))
     log.info(f"[Daglo] STT 완료 — 단어 수: {len(words)}, 화자: {speakers}")
     return result
 
@@ -245,14 +267,15 @@ def run_voice_ml(patient_text: str) -> float:
     텍스트가 없거나 모델 로드 실패 시 0.0 반환.
     반환: 0~100 float
     """
-    if _rf_model is None or _kote_pipe is None:
+    kote_pipe = _get_kote_pipe()
+    if _rf_model is None or kote_pipe is None:
         return 0.0
     if not patient_text.strip():
         return 0.0
 
     try:
         # ── KoTE: 텍스트 → 44개 감정 확률 ──
-        kote_result = _kote_pipe(patient_text)[0]   # [{"label": ..., "score": ...}, ...]
+        kote_result = kote_pipe(patient_text)[0]   # [{"label": ..., "score": ...}, ...]
         # kote_labels 순서에 맞게 확률 배열 정렬
         score_map = {item["label"]: item["score"] for item in kote_result}
         feat = np.array(
@@ -262,6 +285,9 @@ def run_voice_ml(patient_text: str) -> float:
 
         # ── RF Regressor: 감정 확률 → 스트레스 점수 ──
         stress = float(_rf_model.predict(feat)[0])
+        # 모델이 0~1 범위로 예측하는 경우 0~100으로 스케일링
+        if stress <= 1.0:
+            stress = stress * 100.0
         stress = max(0.0, min(100.0, stress))   # 0~100 클리핑
         return round(stress, 2)
 
@@ -394,7 +420,7 @@ async def process_chunk(
 async def run_pipeline(
     session_id:       str,
     pss_score:        float,
-    threshold:        float,
+    threshold_ref:    list,          # [threshold_value] — 실시간 변경 가능한 mutable 참조
     hrv_stress_queue: asyncio.Queue,
 ) -> None:
     """
@@ -403,15 +429,15 @@ async def run_pipeline(
     hrv_stress_queue : 외부(hrv_main 또는 코디네이터)에서
                        1분마다 hrv_stress(float) 를 put() 해야 한다.
     pss_score        : 문진 결과 점수 (0~40), 세션 중 고정값.
-    threshold        : RMSSD 피크 판단 임계치 (ms 단위 기준 hrv_stress).
+    threshold_ref    : [임계치] — PSS 제출 시 외부에서 값을 변경하면 즉시 반영.
     """
-    log.info(f"파이프라인 시작 — session={session_id} pss={pss_score} threshold={threshold}")
+    log.info(f"파이프라인 시작 — session={session_id} pss={pss_score} threshold={threshold_ref[0]}")
 
     latest_hrv_stress = 0.0  # 아직 ML 결과 없을 때 기본값
 
     while True:
         chunk_start = datetime.now()
-        log.info(f"[Chunk {chunk_start.strftime('%H:%M:%S')}] 녹음 시작")
+        log.info(f"[Chunk {chunk_start.strftime('%H:%M:%S')}] 녹음 시작 (threshold={threshold_ref[0]})")
 
         # ── 1분 녹음 (블로킹 → 스레드풀) ──
         audio_bytes = await record_chunk()
@@ -431,7 +457,7 @@ async def run_pipeline(
                 chunk_start=chunk_start,
                 hrv_stress=hrv_stress_snapshot,
                 pss_score=pss_score,
-                threshold=threshold,
+                threshold=threshold_ref[0],   # 매 청크마다 최신 임계치 사용
                 session_id=session_id,
             )
         )
