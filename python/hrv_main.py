@@ -310,76 +310,36 @@ def upload_graph_to_firebase(session_id: str, rmssd_history: List) -> Optional[s
 
 
 def save_graph_url_to_db(session_id: str, graph_url: str):
-    """그래프 URL을 tb_session.stress_graph_data(JSON)에 직접 저장."""
-    import psycopg2, json
-    conn = None
+    """그래프 URL을 Node.js API를 통해 tb_session에 저장."""
+    import json
     try:
-        conn = psycopg2.connect(
-            host="project-db-campus.smhrd.com",
-            port=3310,
-            dbname="campus_25kdt_ha4_p2_3",
-            user="campus_25kdt_ha4_p2_3",
-            password="smhrd3",
+        requests.post(
+            f"{NODE_API}/api/graph-url",
+            json={"session_id": session_id, "graph_url": graph_url},
+            timeout=5,
         )
-        cur = conn.cursor()
-
-        # 기존 stress_graph_data 조회
-        cur.execute(
-            "SELECT stress_graph_data FROM tb_session WHERE session_id = %s",
-            (int(session_id),)
-        )
-        row = cur.fetchone()
-        if row is None:
-            print(f"⚠️ session_id {session_id} 없음 — URL만 로그")
-            print(f"graph_url: {graph_url}")
-            return
-
-        existing = {}
-        try:
-            existing = json.loads(row[0] or '{}')
-        except Exception:
-            existing = {}
-
-        existing['graph_url'] = graph_url
-
-        cur.execute(
-            "UPDATE tb_session SET stress_graph_data = %s WHERE session_id = %s",
-            (json.dumps(existing), int(session_id))
-        )
-        conn.commit()
         print(f"✅ DB graph_url 저장 완료: session={session_id}")
     except Exception as e:
         print(f"⚠️ DB graph_url 저장 실패: {e}")
-    finally:
-        if conn:
-            conn.close()
 
 
 def save_hrv_to_db(session_id: int, hr: float, rmssd: float, pnn50: float, sd1: float):
-    """10초 단위 HRV 요약을 tb_hrv_data에 직접 저장."""
-    import psycopg2
-    conn = None
+    """10초 단위 HRV 요약을 Node.js API를 통해 저장."""
     try:
-        conn = psycopg2.connect(
-            host="project-db-campus.smhrd.com",
-            port=3310,
-            dbname="campus_25kdt_ha4_p2_3",
-            user="campus_25kdt_ha4_p2_3",
-            password="smhrd3",
+        requests.post(
+            f"{NODE_API}/api/rmssd",
+            json={
+                "session_id": session_id,
+                "hr_val":     round(hr),
+                "rmssd_val":  round(rmssd),
+                "pnn50_val":  round(pnn50),
+                "sd1_val":    round(sd1),
+            },
+            timeout=5,
         )
-        cur = conn.cursor()
-        cur.execute(
-            """INSERT INTO tb_hrv_data (session_id, hr_val, rmssd_val, pnn50_val, sd1_val, time_stamp)
-               VALUES (%s, %s, %s, %s, %s, NOW())""",
-            (session_id, round(hr), round(rmssd), round(pnn50), round(sd1))
-        )
-        conn.commit()
         print(f"✅ HRV 저장: session={session_id} rmssd={round(rmssd)} hr={round(hr)}")
     except Exception as e:
-        print(f"⚠️ HRV DB 저장 실패: {e}")
-    finally:
-        if conn:
-            conn.close()
+        print(f"⚠️ HRV 저장 실패: {e}")
 
 
 # === 인스턴스 ===
@@ -483,6 +443,104 @@ async def health_check():
         "ecg_pointer":   ecg_processor.pointer,
         "ecg_available": ecg_signal is not None,
     }
+
+
+# ── 음성 파이프라인 관리 ────────────────────────────────────────────────
+import asyncio
+import random
+import sys
+import os
+import threading
+
+_voice_tasks: Dict[str, dict] = {}   # session_id → {tasks, threshold_ref, stop_event}
+
+
+@app.post("/start-voice")
+async def start_voice(request: Dict):
+    """
+    대시보드 진입 시 호출.
+    session_id 에 대한 음성 파이프라인(녹음→STT→ML)을 백그라운드로 시작.
+    HRV 스트레스는 mock(랜덤) 값 사용.
+    """
+    # 처음 호출 시에만 import (KoTE 모델 로딩 지연)
+    sys.path.insert(0, os.path.dirname(__file__))
+    from voice_pipeline import run_pipeline, RECORD_SECONDS
+
+    session_id = str(request.get("session_id", ""))
+    pss_score  = float(request.get("pss_score",  0.0))
+    threshold  = float(request.get("threshold",  70.0))
+
+    if not session_id:
+        return {"error": "session_id 필수"}
+
+    # 이미 실행 중이면 기존 것 중단
+    if session_id in _voice_tasks:
+        prev = _voice_tasks.pop(session_id)
+        prev["stop_event"].set()
+        for t in prev["tasks"]:
+            t.cancel()
+
+    hrv_q: asyncio.Queue  = asyncio.Queue()
+    threshold_ref          = [threshold]
+    stop_event             = threading.Event()   # 진단 완료 시 set() → 현재 녹음 즉시 종료
+
+    async def _mock_hrv_poller():
+        await hrv_q.put(random.uniform(60, 80))   # 첫 청크에도 값 있도록 즉시 투입
+        while True:
+            await asyncio.sleep(RECORD_SECONDS)
+            await hrv_q.put(random.uniform(60, 80))
+
+    pipeline_task = asyncio.create_task(
+        run_pipeline(
+            session_id=session_id,
+            pss_score=pss_score,
+            threshold_ref=threshold_ref,
+            hrv_stress_queue=hrv_q,
+            stop_event=stop_event,
+        )
+    )
+    poller_task = asyncio.create_task(_mock_hrv_poller())
+    _voice_tasks[session_id] = {
+        "tasks":         [pipeline_task, poller_task],
+        "threshold_ref": threshold_ref,
+        "stop_event":    stop_event,
+    }
+
+    print(f"[Voice] 파이프라인 시작 — session={session_id}")
+    return {"status": "started", "session_id": session_id}
+
+
+@app.post("/stop-voice")
+async def stop_voice(request: Dict):
+    """
+    진단 완료 시 호출.
+    stop_event 를 set → 현재 녹음을 즉시 끊고 그때까지의 오디오를 STT 에 제출.
+    STT/ML 처리는 백그라운드에서 계속 완료됨.
+    """
+    session_id = str(request.get("session_id", ""))
+    entry = _voice_tasks.pop(session_id, None)
+    if entry:
+        # 현재 녹음을 즉시 종료시키는 신호 (process_chunk 백그라운드 태스크는 계속 실행)
+        entry["stop_event"].set()
+        # HRV poller 만 즉시 취소 (pipeline_task 는 stop_event 감지 후 자체 종료)
+        entry["tasks"][1].cancel()
+    print(f"[Voice] 파이프라인 중지 요청 — session={session_id} (마지막 청크 STT 처리 중)")
+    return {"status": "stopped", "session_id": session_id}
+
+
+@app.post("/update-voice")
+async def update_voice(request: Dict):
+    """
+    PSS 제출 시 호출. 실행 중인 음성 파이프라인의 임계치를 즉시 업데이트.
+    """
+    session_id = str(request.get("session_id", ""))
+    threshold  = float(request.get("threshold", 70.0))
+    entry = _voice_tasks.get(session_id)
+    if entry:
+        entry["threshold_ref"][0] = threshold
+        print(f"[Voice] 임계치 업데이트 — session={session_id} threshold={threshold}")
+        return {"status": "updated", "threshold": threshold}
+    return {"status": "not_found", "session_id": session_id}
 
 
 if __name__ == "__main__":

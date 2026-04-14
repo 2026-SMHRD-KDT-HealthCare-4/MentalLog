@@ -14,6 +14,8 @@ import io
 import json
 import logging
 import os
+import queue
+import threading
 import wave
 from pathlib import Path
 from collections import Counter
@@ -46,22 +48,16 @@ logging.basicConfig(
 )
 log = logging.getLogger("voice_pipeline")
 
-# ── API 키 (.env 에서 로드) ───────────────────────────────────────────────
-DAGLO_API_KEY = os.getenv("DAGLO_API_KEY", "")
-
-def _mask(value: str) -> str:
-    """앞 4자리만 표시하고 나머지는 마스킹."""
-    return value[:4] + "****" if len(value) >= 4 else "****"
-
-log.info(f"[ENV] DAGLO_API_KEY = {_mask(DAGLO_API_KEY)}")
+# ── ReturnZero API 키 (.env 에서 로드) ──────────────────────────────────
+RTZR_CLIENT_ID     = os.getenv("RTZR_CLIENT_ID",     "[client id]")
+RTZR_CLIENT_SECRET = os.getenv("RTZR_CLIENT_SECRET", "[client secret]")
+RTZR_BASE_URL      = "https://openapi.vito.ai"
 
 # ── 상수 ────────────────────────────────────────────────────────────────
-PATIENT_SPEAKER_ID  = 1       # 화자분리 결과에서 환자 라벨 (추후 변경 가능)
-TOP_KEYWORD_COUNT   = 5       # 키워드 추출 상위 N개
-RECORD_SECONDS      = 60      # 녹음 구간 (초)
-SAMPLE_RATE         = 16000   # Hz, mono
-DAGLO_STT_ASYNC_URL = "https://apis.daglo.ai/stt/v1/async/transcripts"
-NODE_API            = "http://localhost:3001"
+TOP_KEYWORD_COUNT = 5      # 키워드 추출 상위 N개
+RECORD_SECONDS    = 60     # 녹음 구간 (초)
+SAMPLE_RATE       = 16000  # Hz, mono
+NODE_API          = "http://localhost:3001"
 
 # ── 음성 ML 모델 로드 ────────────────────────────────────────────────────
 # voice_stress_model.pkl 구조: {"model_name": str, "rf_model": RFRegressor, "kote_labels": list}
@@ -76,18 +72,27 @@ except Exception as _e:
     _bundle = _rf_model = _kote_labels = _kote_name = None
     log.warning(f"음성 ML 모델 로드 실패: {_e}")
 
-# ── KoTE 감정 분류 파이프라인 로드 ───────────────────────────────────────
-try:
-    from transformers import pipeline as hf_pipeline
-    _kote_pipe = hf_pipeline(
-        "text-classification",
-        model=_kote_name,
-        top_k=None,   # 44개 감정 전체 확률 반환
-    )
-    log.info("KoTE 파이프라인 로드 성공")
-except Exception as _e:
-    _kote_pipe = None
-    log.warning(f"KoTE 파이프라인 로드 실패: {_e}")
+# ── KoTE 파이프라인: 처음 사용 시 로드 (lazy) ────────────────────────────
+_kote_pipe = None
+
+def _get_kote_pipe():
+    """KoTE 파이프라인을 처음 호출 시에만 로드 (lazy loading)."""
+    global _kote_pipe
+    if _kote_pipe is not None:
+        return _kote_pipe
+    if _kote_name is None:
+        return None
+    try:
+        from transformers import pipeline as hf_pipeline
+        _kote_pipe = hf_pipeline(
+            "text-classification",
+            model=_kote_name,
+            top_k=None,
+        )
+        log.info("KoTE 파이프라인 로드 성공")
+    except Exception as _e:
+        log.warning(f"KoTE 파이프라인 로드 실패: {_e}")
+    return _kote_pipe
 
 # ── 한국어 형태소 분석기 (kiwipiepy 우선, 없으면 정규식 폴백) ──────────────
 try:
@@ -109,18 +114,37 @@ except ImportError:
 # 1. 마이크 녹음
 # ════════════════════════════════════════════════════════════════════════
 
-def _record_blocking(duration: int) -> bytes:
-    """동기 함수. sounddevice 로 duration 초 녹음 후 WAV bytes 반환."""
+def _record_blocking(duration: int, stop_event: threading.Event) -> bytes:
+    """
+    동기 함수. sounddevice InputStream 으로 녹음.
+    stop_event 가 set 되면 즉시 녹음을 끊고 그때까지 수집된 오디오를 반환.
+    정상 흐름(duration 초 경과)에도 동일하게 반환.
+    """
     import sounddevice as sd
 
-    audio = sd.rec(
-        frames=duration * SAMPLE_RATE,
+    frame_queue: queue.Queue = queue.Queue()
+
+    def _callback(indata, *_):
+        frame_queue.put(indata.copy())
+
+    frames_list = []
+    with sd.InputStream(
         samplerate=SAMPLE_RATE,
         channels=1,
         dtype="int16",
-    )
-    sd.wait()  # 녹음 완료 대기
+        callback=_callback,
+    ):
+        # duration 초 또는 stop_event 세트까지 대기
+        stop_event.wait(timeout=duration)
 
+    # 스트림 종료 후 큐에 남은 프레임 수집
+    while not frame_queue.empty():
+        frames_list.append(frame_queue.get_nowait())
+
+    if not frames_list:
+        return b""
+
+    audio = np.concatenate(frames_list, axis=0)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
@@ -130,78 +154,109 @@ def _record_blocking(duration: int) -> bytes:
     return buf.getvalue()
 
 
-async def record_chunk() -> bytes:
-    """비동기 래퍼. 이벤트 루프를 블록하지 않고 마이크 녹음."""
+async def record_chunk(stop_event: threading.Event) -> bytes:
+    """비동기 래퍼. stop_event 세트 시 현재까지 녹음분을 즉시 반환."""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _record_blocking, RECORD_SECONDS)
+    return await loop.run_in_executor(None, _record_blocking, RECORD_SECONDS, stop_event)
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 2. Daglo STT (비동기 — 직접 파일 전송 + 폴링)
+# 2. ReturnZero STT (비동기 — 토큰 발급 → 파일 전송 → 폴링)
 # ════════════════════════════════════════════════════════════════════════
 
-async def call_daglo_stt(audio_bytes: bytes) -> dict:
+# ── JWT 토큰 캐시 (6시간 유효, 만료 30분 전 갱신) ──
+_rtzr_token: dict = {}   # {"access_token": str, "expire_at": int}
+
+
+def _get_rtzr_token() -> str:
     """
-    Daglo async STT: WAV bytes 를 직접 전송 (스토리지 불필요).
-    화자분리(diarization) 포함.
-    반환: Daglo STT 응답 JSON (sttResult.segments 포함)
+    ReturnZero access token 반환.
+    캐시가 유효하면 재사용, 만료 임박(30분 이내)이면 재발급.
     """
-    headers = {
-        "Authorization": f"Bearer {DAGLO_API_KEY}",
-    }
+    if _rtzr_token.get("access_token") and \
+            _rtzr_token.get("expire_at", 0) > time.time() + 1800:
+        return _rtzr_token["access_token"]
+
+    resp = requests.post(
+        f"{RTZR_BASE_URL}/v1/authenticate",
+        data={"client_id": RTZR_CLIENT_ID, "client_secret": RTZR_CLIENT_SECRET},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    _rtzr_token["access_token"] = data["access_token"]
+    _rtzr_token["expire_at"]    = data.get("expire_at", int(time.time()) + 21600)
+    log.info("[RTZR] 토큰 발급 완료")
+    return _rtzr_token["access_token"]
+
+
+async def call_rtzr_stt(audio_bytes: bytes) -> dict:
+    """
+    ReturnZero async STT: WAV bytes 전송 → 폴링 → 결과 반환.
+    화자분리(use_diarization=true, spk_count=2) 포함.
+
+    반환: ReturnZero 응답 JSON
+      - results.utterances[].msg  : 발화 텍스트
+      - results.utterances[].spk  : 화자 ID (int, 0-based)
+      - results.utterances[].start_at   : 시작 시각 (ms)
+      - results.utterances[].duration   : 길이 (ms)
+    """
+    loop = asyncio.get_event_loop()
+
     config = {
-        "sttConfig": {
-            "speakerDiarization": {"enable": True},
-        },
+        "model_name":             "sommers",
+        "language":               "ko",
+        "use_diarization":        True,
+        "diarization":            {"spk_count": 2},
+        "use_itn":                True,
+        "use_disfluency_filter":  True,
+        "use_profanity_filter":   False,
+        "use_paragraph_splitter": False,
+        "domain":                 "GENERAL",
     }
-
-    loop = asyncio.get_event_loop()
 
     # ── 작업 제출 ──
     def _submit():
-        files = {
-            "file":   ("audio.wav", audio_bytes, "audio/wav"),
-            "config": (None, json.dumps(config), "application/json"),
-        }
+        token = _get_rtzr_token()
         resp = requests.post(
-            DAGLO_STT_ASYNC_URL,
-            headers=headers,
-            files=files,
+            f"{RTZR_BASE_URL}/v1/transcribe",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("audio.wav", audio_bytes, "audio/wav")},
+            data={"config": json.dumps(config)},
             timeout=60,
         )
         resp.raise_for_status()
         return resp.json()
 
     submit_result = await loop.run_in_executor(None, _submit)
-    rid = submit_result.get("rid")
-    if not rid:
-        raise ValueError(f"[Daglo] 작업 제출 실패: {submit_result}")
-    log.info(f"[Daglo] 작업 제출 완료 — rid={rid}")
+    tid = submit_result.get("id")
+    if not tid:
+        raise ValueError(f"[RTZR] 작업 제출 실패: {submit_result}")
+    log.info(f"[RTZR] 작업 제출 완료 — id={tid}")
 
     # ── 폴링 (최대 5분, 5초 간격) ──
-    _DONE    = {"transcribed"}
-    _FAILED  = {"failed", "error"}
-
     def _poll():
-        poll_url = f"{DAGLO_STT_ASYNC_URL}/{rid}"
+        url = f"{RTZR_BASE_URL}/v1/transcribe/{tid}"
         for _ in range(60):
             time.sleep(5)
-            resp = requests.get(poll_url, headers=headers, timeout=30)
+            token = _get_rtzr_token()
+            resp  = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
             resp.raise_for_status()
             data   = resp.json()
             status = data.get("status", "")
-            if status in _DONE:
+            if status == "completed":
                 return data
-            if status in _FAILED:
-                raise RuntimeError(f"[Daglo] STT 실패 — status={status}")
-            log.info(f"[Daglo] 처리 중... status={status}")
-        raise TimeoutError("[Daglo] STT 폴링 타임아웃 (5분)")
+            if status == "failed":
+                raise RuntimeError(f"[RTZR] STT 실패 — status={status}")
+            log.info(f"[RTZR] 처리 중... status={status}")
+        raise TimeoutError("[RTZR] STT 폴링 타임아웃 (5분)")
 
     result      = await loop.run_in_executor(None, _poll)
-    stt_results = result.get("sttResults", [])
-    words       = stt_results[0].get("words", []) if stt_results else []
-    speakers    = sorted(set(w.get("speaker", "?") for w in words))
-    log.info(f"[Daglo] STT 완료 — 단어 수: {len(words)}, 화자: {speakers}")
+    utterances  = result.get("results", {}).get("utterances", [])
+    speaker_ids = sorted(set(u["spk"] for u in utterances if u.get("spk") is not None))
+    log.info(f"[RTZR] STT 완료 — 발화 수: {len(utterances)}, 화자: {speaker_ids}")
+    if utterances:
+        log.info(f"[RTZR][DEBUG] utterances[0] 전체: {utterances[0]}")
     return result
 
 
@@ -209,34 +264,45 @@ async def call_daglo_stt(audio_bytes: bytes) -> dict:
 # 4. 환자 발화 추출
 # ════════════════════════════════════════════════════════════════════════
 
-def extract_patient_utterances(daglo_result: dict) -> str:
+def extract_patient_utterances(rtzr_result: dict) -> str:
     """
-    Daglo STT 결과에서 PATIENT_SPEAKER_ID 화자 발화만 추출해 텍스트로 반환.
-    words[].speaker 가 str(PATIENT_SPEAKER_ID) 인 단어들만 이어붙임.
-    화자분리 결과가 없거나 환자 발화가 없으면 전체 transcript 를 폴백으로 사용.
+    ReturnZero STT 결과에서 환자 발화 텍스트 추출.
+    - 화자분리: results.utterances[].spk (int, 0-based)
+    - 발화 수가 가장 많은 화자 = 환자로 간주
+    - 화자 정보 없으면 전체 발화 텍스트 사용
     """
-    stt_results = daglo_result.get("sttResults", [])
-    stt         = stt_results[0] if stt_results else {}
-    words       = stt.get("words", [])
+    utterances = rtzr_result.get("results", {}).get("utterances", [])
 
-    # ── 화자분리 결과 있을 때 ──
-    if words and any(w.get("speaker") for w in words):
-        speakers = sorted(set(w.get("speaker", "?") for w in words))
-        log.info(f"[STT] 화자분리 완료 — 화자 목록: {speakers}")
-        patient_label = str(PATIENT_SPEAKER_ID)
-        patient_words = [
-            w.get("word", "")
-            for w in words
-            if str(w.get("speaker", "")) == patient_label
-        ]
-        text = "".join(patient_words).strip()
-        if text:
-            return text
+    # ── spk 필드가 있으면 화자분리 사용 ──
+    spk_utts = [u for u in utterances if u.get("spk") is not None]
 
-    # ── 폴백: 화자분리 실패 or 환자 발화 없음 → 전체 transcript 사용 ──
-    fallback = stt.get("transcript", "")
-    if fallback:
-        log.info("[STT] 화자분리 결과 없음 → 전체 transcript 폴백 사용")
+    if spk_utts:
+        spk_counter = Counter(u["spk"] for u in spk_utts)
+        unique_spks = list(spk_counter.keys())
+        log.info(f"[STT] 화자 분리 완료 — 화자 목록: {unique_spks}, 발화수: {dict(spk_counter)}")
+
+        # 화자별 발화 내용 로그
+        for spk in unique_spks:
+            spk_text = " ".join(u["msg"] for u in spk_utts if u["spk"] == spk).strip()
+            log.info(f"[STT] 화자 {spk} 발화: {spk_text[:120]}")
+
+        if len(unique_spks) >= 2:
+            # 발화 수가 가장 많은 화자 = 환자
+            patient_spk = spk_counter.most_common(1)[0][0]
+            log.info(f"[STT] 환자로 판단된 화자: {patient_spk} (발화 {spk_counter[patient_spk]}개)")
+            patient_text = " ".join(
+                u["msg"] for u in spk_utts if u["spk"] == patient_spk
+            ).strip()
+            if patient_text:
+                return patient_text
+
+        # 화자 1명 — 전체 발화 사용
+        log.info("[STT] 화자 1명 — 전체 발화 텍스트 사용")
+        return " ".join(u["msg"] for u in spk_utts).strip()
+
+    # ── spk 정보 없음 → 전체 utterances fallback ──
+    fallback = " ".join(u.get("msg", "") for u in utterances)
+    log.info(f"[STT] 화자분리 없음 — 전체 발화 fallback ({len(fallback)}자)")
     return fallback.strip()
 
 
@@ -251,14 +317,15 @@ def run_voice_ml(patient_text: str) -> float:
     텍스트가 없거나 모델 로드 실패 시 0.0 반환.
     반환: 0~100 float
     """
-    if _rf_model is None or _kote_pipe is None:
+    kote_pipe = _get_kote_pipe()
+    if _rf_model is None or kote_pipe is None:
         return 0.0
     if not patient_text.strip():
         return 0.0
 
     try:
         # ── KoTE: 텍스트 → 44개 감정 확률 ──
-        kote_result = _kote_pipe(patient_text)[0]   # [{"label": ..., "score": ...}, ...]
+        kote_result = kote_pipe(patient_text)[0]   # [{"label": ..., "score": ...}, ...]
         # kote_labels 순서에 맞게 확률 배열 정렬
         score_map = {item["label"]: item["score"] for item in kote_result}
         feat = np.array(
@@ -268,6 +335,9 @@ def run_voice_ml(patient_text: str) -> float:
 
         # ── RF Regressor: 감정 확률 → 스트레스 점수 ──
         stress = float(_rf_model.predict(feat)[0])
+        # 모델이 0~1 범위로 예측하는 경우 0~100으로 스케일링
+        if stress <= 1.0:
+            stress = stress * 100.0
         stress = max(0.0, min(100.0, stress))   # 0~100 클리핑
         return round(stress, 2)
 
@@ -287,10 +357,33 @@ _STOPWORDS = {
 }
 
 
-def extract_keywords_sentences(text: str) -> tuple[list[str], dict[str, str]]:
+def build_sentence_mapping(keywords: list, text: str) -> dict:
     """
-    환자 발화 텍스트에서 상위 TOP_KEYWORD_COUNT 개 명사 키워드 추출.
-    각 키워드에 대해 가장 대표 문장(키워드 포함 + 가장 긴 문장) 1개 매핑.
+    주어진 키워드 목록에 대해 text에서 대표 문장(키워드 포함 + 가장 긴 것)을 찾아 반환.
+
+    Parameters
+    ----------
+    keywords : 키워드 문자열 리스트
+    text     : 전체 발화 텍스트
+
+    Returns
+    -------
+    dict[str, str]  { keyword: 대표_문장 }
+    """
+    import re
+    raw_sents    = re.split(r"[.!?。]", text)
+    sents_clean  = [s.strip() for s in raw_sents if len(s.strip()) > 1]
+    result: dict = {}
+    for kw in keywords:
+        candidates     = [s for s in sents_clean if kw in s]
+        result[kw]     = max(candidates, key=len) if candidates else ""
+    return result
+
+
+def extract_keywords_sentences(text: str) -> tuple:
+    """
+    환자 발화 텍스트에서 상위 TOP_KEYWORD_COUNT 개 명사 키워드 추출 (kiwipiepy 폴백).
+    각 키워드에 대해 대표 문장 1개 매핑.
 
     Returns
     -------
@@ -300,29 +393,14 @@ def extract_keywords_sentences(text: str) -> tuple[list[str], dict[str, str]]:
     if not text.strip():
         return [], {}
 
-    # 문장 분리 (마침표/느낌표/물음표 기준)
-    import re
-    raw_sentences = re.split(r"[.!?。]", text)
-    sentences_clean = [s.strip() for s in raw_sentences if len(s.strip()) > 1]
-
     # 명사 추출 및 빈도 계산
     nouns = [n for n in _extract_nouns(text) if n not in _STOPWORDS and len(n) >= 2]
     if not nouns:
         return [], {}
 
-    freq = Counter(nouns)
+    freq     = Counter(nouns)
     keywords = [kw for kw, _ in freq.most_common(TOP_KEYWORD_COUNT)]
-
-    # 키워드별 대표 문장 매핑 (키워드 포함 문장 중 가장 긴 것)
-    keyword_sentences: dict[str, str] = {}
-    for kw in keywords:
-        candidates = [s for s in sentences_clean if kw in s]
-        if candidates:
-            keyword_sentences[kw] = max(candidates, key=len)
-        else:
-            keyword_sentences[kw] = ""
-
-    return keywords, keyword_sentences
+    return keywords, build_sentence_mapping(keywords, text)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -345,23 +423,34 @@ async def process_chunk(
     log.info(f"[Chunk {chunk_label}] 처리 시작 (hrv_stress={hrv_stress:.1f})")
 
     try:
-        # ── 2 & 3. Daglo STT (직접 파일 전송 + 폴링) ──
-        daglo_result = await call_daglo_stt(audio_bytes)
+        # ── 2 & 3. ReturnZero STT (화자분리 포함) ──
+        rtzr_result = await call_rtzr_stt(audio_bytes)
 
-        # ── 4. 환자 발화 추출 ──
-        patient_text = extract_patient_utterances(daglo_result)
-        log.info(f"[Chunk {chunk_label}] 환자 발화 전문:\n{patient_text}")
+        # ── 4. 환자 발화 추출 (utterances[].spk 기반 화자분리) ──
+        patient_text = extract_patient_utterances(rtzr_result)
+        log.info(f"[Chunk {chunk_label}] 환자 발화 ({len(patient_text)}자): {patient_text[:80]}...")
 
-        # ── 5. 음성 ML ──
+        # ── 5. 음성 스트레스 (KoTE ML) ──
         voice_stress = run_voice_ml(patient_text)
-        log.info(f"[Chunk {chunk_label}] 음성 ML 완료 — voice_stress={voice_stress:.1f}")
+        log.info(f"[Chunk {chunk_label}] KoTE ML voice_stress={voice_stress:.1f}")
 
-        # ── 6 & 7. 피크 감지 → 키워드/문장 ──
+        # ── 6 & 7. 피크 감지 → 키워드 + 상황 요약 (kiwipiepy) ──
         is_peak = hrv_stress > threshold
-        keywords, sentences = ([], {})
+        log.info(
+            f"[Chunk {chunk_label}] 피크 판단 — "
+            f"hrv_stress={hrv_stress:.1f} > threshold={threshold:.1f} → is_peak={is_peak}"
+        )
+        keywords: list  = []
+        sentences: dict = {}
+
         if is_peak and patient_text:
             keywords, sentences = extract_keywords_sentences(patient_text)
-            log.info(f"[Chunk {chunk_label}] 피크 감지 — 키워드: {keywords}")
+            log.info(f"[Chunk {chunk_label}] 키워드 {len(keywords)}개: {keywords}")
+            log.info(f"[Chunk {chunk_label}] 상황 요약: { {k: v[:30] for k, v in sentences.items()} }")
+        elif is_peak and not patient_text:
+            log.warning(f"[Chunk {chunk_label}] 피크이지만 발화 텍스트 없음 → 키워드 없음")
+        else:
+            log.info(f"[Chunk {chunk_label}] 피크 아님 → 키워드 추출 생략")
 
         # ── stress_main 호출 ──
         result = calculate_stress(
@@ -379,11 +468,23 @@ async def process_chunk(
             f"voice={result['voice_stress']}"
         )
 
+        # ── 청크 요약: 피크 구간 대표 문장 추출 ──
+        chunk_summary = ""
+        if is_peak and sentences:
+            # sentences 값(대표 문장)에서 중복 제거, 빈 문장 제외
+            unique_sents = list(dict.fromkeys(s for s in sentences.values() if s.strip()))
+            chunk_summary = "\n".join(unique_sents)
+            log.info(f"[Chunk {chunk_label}] 청크 요약 {len(unique_sents)}문장 생성")
+
         # ── Node.js 로 결과 전송 ──
         try:
             requests.post(
                 f"{NODE_API}/api/voice-stress",
-                json={**result, "session_id": session_id},
+                json={
+                    **result,
+                    "session_id":    session_id,
+                    "chunk_summary": chunk_summary,  # 피크 구간 대표 문장 요약
+                },
                 timeout=5,
             )
         except Exception as e:
@@ -400,48 +501,56 @@ async def process_chunk(
 async def run_pipeline(
     session_id:       str,
     pss_score:        float,
-    threshold:        float,
+    threshold_ref:    list,           # [threshold_value] — 실시간 변경 가능한 mutable 참조
     hrv_stress_queue: asyncio.Queue,
+    stop_event:       threading.Event,  # 진단 완료 시 세트 → 현재 녹음 즉시 종료 후 STT 제출
 ) -> None:
     """
     1분 단위 수집 루프.
 
-    hrv_stress_queue : 외부(hrv_main 또는 코디네이터)에서
-                       1분마다 hrv_stress(float) 를 put() 해야 한다.
+    stop_event       : stop-voice 호출 시 set() → 현재 녹음을 즉시 끊고
+                       그때까지 수집된 오디오를 STT 에 제출한 뒤 루프 종료.
+    hrv_stress_queue : 외부에서 1분마다 hrv_stress(float) 를 put() 해야 한다.
     pss_score        : 문진 결과 점수 (0~40), 세션 중 고정값.
-    threshold        : RMSSD 피크 판단 임계치 (ms 단위 기준 hrv_stress).
+    threshold_ref    : [임계치] — PSS 제출 시 외부에서 값을 변경하면 즉시 반영.
     """
-    log.info(f"파이프라인 시작 — session={session_id} pss={pss_score} threshold={threshold}")
+    log.info(f"파이프라인 시작 — session={session_id} pss={pss_score} threshold={threshold_ref[0]}")
 
     latest_hrv_stress = 0.0  # 아직 ML 결과 없을 때 기본값
 
     while True:
         chunk_start = datetime.now()
-        log.info(f"[Chunk {chunk_start.strftime('%H:%M:%S')}] 녹음 시작")
+        log.info(f"[Chunk {chunk_start.strftime('%H:%M:%S')}] 녹음 시작 (threshold={threshold_ref[0]})")
 
-        # ── 1분 녹음 (블로킹 → 스레드풀) ──
-        audio_bytes = await record_chunk()
-        log.info(f"[Chunk {chunk_start.strftime('%H:%M:%S')}] 녹음 완료 ({RECORD_SECONDS}s)")
+        # ── 녹음 (stop_event 세트 시 즉시 종료, 그때까지의 오디오 반환) ──
+        audio_bytes = await record_chunk(stop_event)
+        duration_s  = len(audio_bytes) / (SAMPLE_RATE * 2) if audio_bytes else 0
+        log.info(f"[Chunk {chunk_start.strftime('%H:%M:%S')}] 녹음 완료 ({duration_s:.1f}s)")
 
         # ── 이번 구간의 hrv_stress 취득 ──
-        # hrv_main 이 1분 ML 결과를 Queue 에 put() 했으면 사용, 없으면 마지막 값 유지
         while not hrv_stress_queue.empty():
             latest_hrv_stress = await hrv_stress_queue.get()
-
         hrv_stress_snapshot = latest_hrv_stress
 
-        # ── 처리를 백그라운드 태스크로 위임 → 즉시 다음 수집 시작 ──
-        asyncio.create_task(
-            process_chunk(
-                audio_bytes=audio_bytes,
-                chunk_start=chunk_start,
-                hrv_stress=hrv_stress_snapshot,
-                pss_score=pss_score,
-                threshold=threshold,
-                session_id=session_id,
+        # ── 녹음 데이터가 있으면 백그라운드 처리 위임 ──
+        if audio_bytes:
+            asyncio.create_task(
+                process_chunk(
+                    audio_bytes=audio_bytes,
+                    chunk_start=chunk_start,
+                    hrv_stress=hrv_stress_snapshot,
+                    pss_score=pss_score,
+                    threshold=threshold_ref[0],
+                    session_id=session_id,
+                )
             )
-        )
-        # 루프는 즉시 다음 1분 수집으로 진행 (딜레이 없음)
+        else:
+            log.warning(f"[Chunk {chunk_start.strftime('%H:%M:%S')}] 녹음 데이터 없음 → 건너뜀")
+
+        # ── 중단 신호가 세트됐으면 루프 종료 ──
+        if stop_event.is_set():
+            log.info("[Voice] stop_event 감지 → 파이프라인 종료 (마지막 청크는 백그라운드 처리 중)")
+            break
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -529,8 +638,9 @@ if __name__ == "__main__":
                 run_pipeline(
                     session_id=args.session_id,
                     pss_score=args.pss_score,
-                    threshold=args.threshold,
+                    threshold_ref=[args.threshold],
                     hrv_stress_queue=hrv_q,
+                    stop_event=threading.Event(),  # 단독 실행: 외부 중단 신호 없음
                 ),
                 _hrv_poller(),
             )
