@@ -379,11 +379,11 @@ router.get('/recent-visits', async (req, res) => {
 
 // POST /api/voice-stress — voice_pipeline.py 에서 1분마다 결과 수신
 router.post('/voice-stress', (req, res) => {
-  const { session_id, voice_stress, total_stress, chunk_start_time, keywords, sentences } = req.body
+  const { session_id, voice_stress, total_stress, chunk_start_time, keywords, sentences, chunk_summary } = req.body
   if (!session_id) return res.status(400).json({ error: 'session_id 필수' })
 
   // 키워드 누적 (새 키워드를 앞에 추가, 최대 20개 유지)
-  const prev = voiceResultStore.get(String(session_id)) || { keywords_history: [] }
+  const prev = voiceResultStore.get(String(session_id)) || { keywords_history: [], session_summary: '' }
   const newKeywords = (keywords || []).map((word, i) => ({
     id:       Date.now() + i,
     word,
@@ -392,11 +392,18 @@ router.post('/voice-stress', (req, res) => {
   }))
   const keywords_history = [...newKeywords, ...prev.keywords_history].slice(0, 20)
 
+  // 피크 구간 대표 문장 누적 → 세션 요약
+  const prev_summary = prev.session_summary || ''
+  const session_summary = chunk_summary
+    ? (prev_summary ? prev_summary + '\n\n' + chunk_summary : chunk_summary)
+    : prev_summary
+
   voiceResultStore.set(String(session_id), {
     voice_stress:      voice_stress      || 0,
     total_stress:      total_stress      || 0,
     chunk_start_time:  chunk_start_time  || '',
     keywords_history,
+    session_summary,
     updated_at: Date.now(),
   })
 

@@ -450,8 +450,9 @@ import asyncio
 import random
 import sys
 import os
+import threading
 
-_voice_tasks: Dict[str, list] = {}   # session_id → [pipeline_task, poller_task]
+_voice_tasks: Dict[str, dict] = {}   # session_id → {tasks, threshold_ref, stop_event}
 
 
 @app.post("/start-voice")
@@ -472,21 +473,22 @@ async def start_voice(request: Dict):
     if not session_id:
         return {"error": "session_id 필수"}
 
-    # 이미 실행 중이면 기존 것 취소
+    # 이미 실행 중이면 기존 것 중단
     if session_id in _voice_tasks:
-        for t in _voice_tasks[session_id]:
+        prev = _voice_tasks.pop(session_id)
+        prev["stop_event"].set()
+        for t in prev["tasks"]:
             t.cancel()
 
-    hrv_q: asyncio.Queue = asyncio.Queue()
-    threshold_ref = [threshold]   # mutable 참조 — /update-voice 로 실시간 변경 가능
+    hrv_q: asyncio.Queue  = asyncio.Queue()
+    threshold_ref          = [threshold]
+    stop_event             = threading.Event()   # 진단 완료 시 set() → 현재 녹음 즉시 종료
 
     async def _mock_hrv_poller():
-        # 첫 번째 청크에도 값이 있도록 즉시 초기값 투입
-        await hrv_q.put(random.uniform(60, 80))
+        await hrv_q.put(random.uniform(60, 80))   # 첫 청크에도 값 있도록 즉시 투입
         while True:
             await asyncio.sleep(RECORD_SECONDS)
-            mock_hrv = random.uniform(60, 80)  # 항상 threshold 초과하도록 60~80 범위
-            await hrv_q.put(mock_hrv)
+            await hrv_q.put(random.uniform(60, 80))
 
     pipeline_task = asyncio.create_task(
         run_pipeline(
@@ -494,12 +496,14 @@ async def start_voice(request: Dict):
             pss_score=pss_score,
             threshold_ref=threshold_ref,
             hrv_stress_queue=hrv_q,
+            stop_event=stop_event,
         )
     )
     poller_task = asyncio.create_task(_mock_hrv_poller())
     _voice_tasks[session_id] = {
         "tasks":         [pipeline_task, poller_task],
         "threshold_ref": threshold_ref,
+        "stop_event":    stop_event,
     }
 
     print(f"[Voice] 파이프라인 시작 — session={session_id}")
@@ -509,14 +513,18 @@ async def start_voice(request: Dict):
 @app.post("/stop-voice")
 async def stop_voice(request: Dict):
     """
-    대시보드 종료 시 호출. 음성 파이프라인 중지.
+    진단 완료 시 호출.
+    stop_event 를 set → 현재 녹음을 즉시 끊고 그때까지의 오디오를 STT 에 제출.
+    STT/ML 처리는 백그라운드에서 계속 완료됨.
     """
     session_id = str(request.get("session_id", ""))
     entry = _voice_tasks.pop(session_id, None)
     if entry:
-        for t in entry["tasks"]:
-            t.cancel()
-    print(f"[Voice] 파이프라인 중지 — session={session_id}")
+        # 현재 녹음을 즉시 종료시키는 신호 (process_chunk 백그라운드 태스크는 계속 실행)
+        entry["stop_event"].set()
+        # HRV poller 만 즉시 취소 (pipeline_task 는 stop_event 감지 후 자체 종료)
+        entry["tasks"][1].cancel()
+    print(f"[Voice] 파이프라인 중지 요청 — session={session_id} (마지막 청크 STT 처리 중)")
     return {"status": "stopped", "session_id": session_id}
 
 

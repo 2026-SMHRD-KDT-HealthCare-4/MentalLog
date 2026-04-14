@@ -103,10 +103,11 @@ const Monitor = () => {
     setBaselineReady(false)
 
     // 음성 파이프라인 시작 (pss_score는 로드 후 업데이트되지만 기본값으로 먼저 시작)
+    // threshold 30: mock HRV(60~80)이 항상 초과하도록 낮게 설정 → PSS 제출 전에도 키워드 추출 가능
     axios.post(`${PYTHON_API}/start-voice`, {
       session_id: String(newSessionId),
       pss_score:  pssScoreRef.current || 0,
-      threshold:  70,
+      threshold:  30,
     }).catch(() => {})
 
     // 컴포넌트 언마운트 또는 환자 변경 시 음성 파이프라인 중지
@@ -147,6 +148,15 @@ const Monitor = () => {
         birth_date:  patData.birth_date  || null,
         med_history: patData.med_history || null,
       }).catch(e => console.error('환자 upsert 실패:', e?.response?.data || e?.message))
+
+      // 세션 레코드 즉시 생성 (HRV 데이터 FK 위반 방지)
+      await axios.post(`${API}/api/notes`, {
+        session_id:   sessionIdRef.current,
+        pat_id:       patData.pat_id,
+        notes:        '',
+        stress_total: 0,
+        stress_peak:  0,
+      }).catch(() => {})
 
       const visits = histRes.data || []
       setPrescriptions(visits.map(v => ({
