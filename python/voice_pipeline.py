@@ -24,7 +24,6 @@ import time
 import joblib
 import numpy as np
 import requests
-<<<<<<< HEAD
 from stress_main import calculate_stress
 
 import os 
