@@ -91,6 +91,10 @@ const Monitor = () => {
   const [selectedKw, setSelectedKw] = useState(null)
   const [isSaved, setIsSaved] = useState(false)
 
+  // 캘리브레이션 상태: 'idle' | 'loading' | 'done' | 'failed'
+  const [calibStatus, setCalibStatus] = useState('idle')
+  const [calibCountdown, setCalibCountdown] = useState(4)
+
   // 의사 소견
   const [notes, setNotes] = useState('')
 
@@ -110,11 +114,12 @@ const Monitor = () => {
       threshold:  30,
     }).catch(() => {})
 
-    // 컴포넌트 언마운트 또는 환자 변경 시 음성 파이프라인 중지
+    // 컴포넌트 언마운트 또는 환자 변경 시 음성 파이프라인 중지 + 캘리브레이션 초기화
     return () => {
       axios.post(`${PYTHON_API}/stop-voice`, {
         session_id: String(newSessionId),
       }).catch(() => {})
+      axios.post(`${PYTHON_API}/api/reset-calibration`).catch(() => {})
     }
   }, [patientId])
 
@@ -330,9 +335,37 @@ const Monitor = () => {
     }
   }
 
+  // ── 캘리브레이션 ──
+  const handleCalibrate = async () => {
+    setCalibStatus('loading')
+    setCalibCountdown(4)
+
+    // 1초마다 카운트다운 (4 → 3 → 2 → 1)
+    let remaining = 4
+    const timer = setInterval(() => {
+      remaining -= 1
+      setCalibCountdown(remaining)
+      if (remaining <= 0) clearInterval(timer)
+    }, 1000)
+
+    try {
+      const res = await axios.post(`${PYTHON_API}/api/calibrate`)
+      clearInterval(timer)
+      if (res.data?.success) {
+        setCalibStatus('done')
+      } else {
+        setCalibStatus('failed')
+      }
+    } catch {
+      clearInterval(timer)
+      setCalibStatus('failed')
+    }
+  }
+
   // ── 진단 완료 → 레포트 ──
   const handleComplete = async () => {
     await handleSave()
+    axios.post(`${PYTHON_API}/api/reset-calibration`).catch(() => {})
     
     // ✅ await로 응답 기다리기
     let graphUrl = null
@@ -429,6 +462,30 @@ const Monitor = () => {
                 {baselineReady
                   ? `✓ 베이스라인 완료: ${baselineRmssd} ms`
                   : '⏳ 베이스라인 측정 중 (1분)...'}
+              </div>
+
+              {/* 캘리브레이션 */}
+              <div className="calibration-section">
+                {calibStatus === 'idle' && (
+                  <button className="calib-btn" onClick={handleCalibrate}>
+                    캘리브레이션 시작
+                  </button>
+                )}
+                {calibStatus === 'loading' && (
+                  <div className="calib-hint">
+                    의사 선생님, 지금 말씀해주세요&nbsp;
+                    <span style={{ fontSize: 14, fontWeight: 700 }}>{calibCountdown}</span>초…
+                  </div>
+                )}
+                {calibStatus === 'done' && (
+                  <div className="calib-done">캘리브레이션 완료 ✓</div>
+                )}
+                {calibStatus === 'failed' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="calib-failed">인식 실패 — 다시 시도해주세요</span>
+                    <button className="calib-btn" onClick={handleCalibrate}>재시도</button>
+                  </div>
+                )}
               </div>
 
               {/* PSS 입력 (제출 전) */}
