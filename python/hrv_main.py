@@ -528,6 +528,27 @@ async def stop_voice(request: Dict):
     return {"status": "stopped", "session_id": session_id}
 
 
+@app.post("/api/calibrate")
+async def calibrate():
+    """
+    의사가 4초 말하는 동안 녹음 → ReturnZero STT → doctor_speaker_id 저장.
+    voice_pipeline 과 같은 프로세스이므로 전역변수 즉시 공유됨.
+    """
+    sys.path.insert(0, os.path.dirname(__file__))
+    from voice_pipeline import calibrate_doctor
+    result = await calibrate_doctor()
+    return result
+
+
+@app.post("/api/reset-calibration")
+async def reset_calib():
+    """세션 종료 시 캘리브레이션 초기화."""
+    sys.path.insert(0, os.path.dirname(__file__))
+    from voice_pipeline import reset_calibration
+    reset_calibration()
+    return {"success": True}
+
+
 @app.post("/update-voice")
 async def update_voice(request: Dict):
     """

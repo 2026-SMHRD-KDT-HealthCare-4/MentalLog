@@ -53,6 +53,10 @@ RTZR_CLIENT_ID     = os.getenv("RTZR_CLIENT_ID",     "[client id]")
 RTZR_CLIENT_SECRET = os.getenv("RTZR_CLIENT_SECRET", "[client secret]")
 RTZR_BASE_URL      = "https://openapi.vito.ai"
 
+# ── 캘리브레이션: 의사 화자 ID ───────────────────────────────────────────
+# calibrate_doctor() 호출 후 설정. None이면 기존 로직(발화 수 기준) 사용.
+doctor_speaker_id: int | None = None
+
 # ── 상수 ────────────────────────────────────────────────────────────────
 TOP_KEYWORD_COUNT = 5      # 키워드 추출 상위 N개
 RECORD_SECONDS    = 60     # 녹음 구간 (초)
@@ -261,6 +265,53 @@ async def call_rtzr_stt(audio_bytes: bytes) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════════
+# 3-b. 화자 캘리브레이션
+# ════════════════════════════════════════════════════════════════════════
+
+async def calibrate_doctor() -> dict:
+    """
+    의사가 4초간 말하는 동안 녹음 → ReturnZero STT → 첫 발화 spk 값을 doctor_speaker_id에 저장.
+    반환:
+        {"success": True,  "doctor_spk": int}
+        {"success": False, "reason": "no_speech" | "no_audio" | <오류 메시지>}
+    """
+    global doctor_speaker_id
+    log.info("[Calib] 의사 캘리브레이션 녹음 시작 (4초)")
+
+    # 4초 고정 녹음 (stop_event는 절대 set 되지 않는 더미)
+    stop_never = threading.Event()
+    loop = asyncio.get_event_loop()
+    audio_bytes = await loop.run_in_executor(None, _record_blocking, 4, stop_never)
+
+    if not audio_bytes:
+        log.warning("[Calib] 오디오 없음")
+        return {"success": False, "reason": "no_audio"}
+
+    log.info("[Calib] STT 전송 중...")
+    try:
+        rtzr_result = await call_rtzr_stt(audio_bytes)
+    except Exception as e:
+        log.error(f"[Calib] STT 오류: {e}")
+        return {"success": False, "reason": str(e)}
+
+    utterances = rtzr_result.get("results", {}).get("utterances", [])
+    if not utterances:
+        log.warning("[Calib] 발화 없음 → 캘리브레이션 실패")
+        return {"success": False, "reason": "no_speech"}
+
+    doctor_speaker_id = utterances[0].get("spk")
+    log.info(f"[Calib] 의사 화자 ID 설정 완료 → doctor_speaker_id={doctor_speaker_id}")
+    return {"success": True, "doctor_spk": doctor_speaker_id}
+
+
+def reset_calibration() -> None:
+    """캘리브레이션 초기화. 세션 종료 시 호출."""
+    global doctor_speaker_id
+    doctor_speaker_id = None
+    log.info("[Calib] doctor_speaker_id 초기화 완료")
+
+
+# ════════════════════════════════════════════════════════════════════════
 # 4. 환자 발화 추출
 # ════════════════════════════════════════════════════════════════════════
 
@@ -287,7 +338,20 @@ def extract_patient_utterances(rtzr_result: dict) -> str:
             log.info(f"[STT] 화자 {spk} 발화: {spk_text[:120]}")
 
         if len(unique_spks) >= 2:
-            # 발화 수가 가장 많은 화자 = 환자
+            # ── 캘리브레이션 적용: 의사 spk 제외 → 나머지 = 환자 ──
+            if doctor_speaker_id is not None:
+                patient_text = " ".join(
+                    u["msg"] for u in spk_utts if u["spk"] != doctor_speaker_id
+                ).strip()
+                if patient_text:
+                    log.info(
+                        f"[STT] 캘리브레이션 기반 추출 — 의사 spk={doctor_speaker_id} 제외"
+                        f" ({len([u for u in spk_utts if u['spk'] != doctor_speaker_id])}개 발화)"
+                    )
+                    return patient_text
+                log.warning("[STT] 캘리브레이션 적용 시 환자 발화 없음 → 발화 수 기반 fallback")
+
+            # ── fallback: 발화 수가 가장 많은 화자 = 환자 ──
             patient_spk = spk_counter.most_common(1)[0][0]
             log.info(f"[STT] 환자로 판단된 화자: {patient_spk} (발화 {spk_counter[patient_spk]}개)")
             patient_text = " ".join(
