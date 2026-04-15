@@ -103,8 +103,27 @@ const Monitor = () => {
     axios.post(`${PYTHON_API}/reset-baseline`).catch(() => {})
     const newSessionId = Date.now()
     sessionIdRef.current = newSessionId
+
+    // 환자 전환 시 이전 환자 데이터 초기화
+    setPatient(null)
+    setRmssdData([])
     setBaselineRmssd(null)
     setBaselineReady(false)
+    setPssInput('')
+    setPssSubmitted(false)
+    setThreshold(null)
+    setVoiceStress(0)
+    setHrv(52)
+    setHr(72)
+    setTotalStress(null)
+    setPeakStress(null)
+    setPrescriptions([])
+    setKeywords([])
+    setSelectedKw(null)
+    setNotes('')
+    setCalibStatus('idle')
+    lastHrvStressRef.current = 0
+    pssScoreRef.current = 0
 
     // 음성 파이프라인 시작 (pss_score는 로드 후 업데이트되지만 기본값으로 먼저 시작)
     // threshold 30: mock HRV(60~80)이 항상 초과하도록 낮게 설정 → PSS 제출 전에도 키워드 추출 가능
