@@ -11,6 +11,8 @@ import json
 import os
 import io
 
+from voice_pipeline import calibrate_doctor, reset_calibration
+
 load_dotenv()
 
 # === 음성 분석 ML 모델 로드 ===
@@ -80,6 +82,23 @@ async def analyze_voice(audio_file: UploadFile = File(...)):
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/calibrate")
+async def calibrate():
+    """
+    의사가 4초간 말하면 화자 ID를 캘리브레이션.
+    voice_pipeline.doctor_speaker_id 에 저장됨.
+    """
+    result = await calibrate_doctor()
+    return result
+
+
+@app.post("/api/reset-calibration")
+async def reset_calib():
+    """세션 종료 시 캘리브레이션 초기화."""
+    reset_calibration()
+    return {"success": True}
 
 
 @app.get("/health")

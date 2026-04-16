@@ -8,6 +8,10 @@ const express = require('express')
 const router = express.Router()
 const conn = require('../config/db')
 
+// ── 음성 파이프라인 결과 인메모리 저장소 ──────────────────────────────────
+// session_id → { voice_stress, total_stress, chunk_start_time, keywords, sentences }
+const voiceResultStore = new Map()
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  환자 API
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -367,6 +371,73 @@ router.get('/recent-visits', async (req, res) => {
     console.error('최근 진료 조회 실패:', err.message)
     res.status(500).json({ error: '조회 실패', detail: err.message })
   }
+})
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  음성 파이프라인 결과 API
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// POST /api/voice-stress — voice_pipeline.py 에서 1분마다 결과 수신
+router.post('/voice-stress', (req, res) => {
+  const { session_id, voice_stress, total_stress, chunk_start_time, keywords, sentences, chunk_summary } = req.body
+  if (!session_id) return res.status(400).json({ error: 'session_id 필수' })
+
+  // 키워드 누적 (새 키워드를 앞에 추가, 최대 20개 유지)
+  const prev = voiceResultStore.get(String(session_id)) || { keywords_history: [], session_summary: '' }
+  const newKeywords = (keywords || []).map((word, i) => ({
+    id:       Date.now() + i,
+    word,
+    time:     chunk_start_time || '',
+    content:  (sentences || {})[word] || '',
+  }))
+  const keywords_history = [...newKeywords, ...prev.keywords_history].slice(0, 20)
+
+  // 피크 구간 대표 문장 누적 → 세션 요약
+  const prev_summary = prev.session_summary || ''
+  const session_summary = chunk_summary
+    ? (prev_summary ? prev_summary + '\n\n' + chunk_summary : chunk_summary)
+    : prev_summary
+
+  voiceResultStore.set(String(session_id), {
+    voice_stress:      voice_stress      || 0,
+    total_stress:      total_stress      || 0,
+    chunk_start_time:  chunk_start_time  || '',
+    keywords_history,
+    session_summary,
+    updated_at: Date.now(),
+  })
+
+  res.status(201).json({ ok: true })
+})
+
+// POST /api/graph-url — Python에서 Firebase graph URL 저장
+router.post('/graph-url', async (req, res) => {
+  const { session_id, graph_url } = req.body
+  if (!session_id || !graph_url) return res.status(400).json({ error: 'session_id, graph_url 필수' })
+  try {
+    const existing = await conn.query(
+      'SELECT stress_graph_data FROM tb_session WHERE session_id = $1',
+      [session_id]
+    )
+    if (existing.rows.length === 0) return res.status(404).json({ error: 'session 없음' })
+    let graphData = {}
+    try { graphData = JSON.parse(existing.rows[0].stress_graph_data || '{}') } catch {}
+    graphData.graph_url = graph_url
+    await conn.query(
+      'UPDATE tb_session SET stress_graph_data = $1 WHERE session_id = $2',
+      [JSON.stringify(graphData), session_id]
+    )
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/voice-stress/:sessionId — Monitor.jsx 에서 폴링
+router.get('/voice-stress/:sessionId', (req, res) => {
+  const data = voiceResultStore.get(req.params.sessionId)
+  if (!data) return res.json(null)
+  res.json(data)
 })
 
 module.exports = router
