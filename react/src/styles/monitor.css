@@ -461,6 +461,49 @@
   border: 1px solid #A5D6A7;
 }
 
+/* 캘리브레이션 */
+.calibration-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #E0E0E0;
+}
+
+.calib-btn {
+  height: 26px;
+  padding: 0 12px;
+  background: #546E7A;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.calib-btn:hover { background: #37474F; }
+
+.calib-hint {
+  font-size: 11px;
+  color: #F57C00;
+  font-weight: 600;
+  animation: pulse 1s infinite;
+}
+
+.calib-done {
+  font-size: 11px;
+  color: #2E7D32;
+  font-weight: 600;
+}
+
+.calib-failed {
+  font-size: 11px;
+  color: #C62828;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
 /* PSS 입력 */
 .pss-input-section {
   margin-top: 8px;

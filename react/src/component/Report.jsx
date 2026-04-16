@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -20,14 +20,6 @@ const GraphTooltip = ({ active, payload, label }) => {
   )
 }
 
-const SAMPLE_KEYWORDS = [
-  { id: 1, word: '가족', time: '12:35:24' },
-  { id: 2, word: '다리', time: '12:38:14' },
-  { id: 3, word: '돈',   time: '12:40:24' },
-  { id: 4, word: '얼굴', time: '12:52:12' },
-  { id: 5, word: '성적', time: '12:53:58' },
-  { id: 6, word: '연애', time: '12:56:32' },
-]
 
 const Report = () => {
   const { patientId } = useParams()
@@ -42,10 +34,13 @@ const Report = () => {
   const passedPeak      = location.state?.peakStress  ?? null
   const passedThreshold = location.state?.threshold   ?? null
   const passedSessionId = location.state?.sessionId   || null
+  const passedKeywords  = location.state?.keywords    || []
 
   const [patient, setPatient] = useState(null)
   const [notes, setNotes] = useState(passedNotes || '')
-  const [summary, setSummary] = useState('')
+  const [keywords, setKeywords] = useState(passedKeywords)
+  const [sessionSummary, setSessionSummary] = useState(location.state?.sessionSummary || '')
+  const [selectedKwId, setSelectedKwId] = useState(null)
   const [cumulativeAvg, setCumulativeAvg] = useState(passedTotal ?? 0)
   const [peakStress, setPeakStress] = useState(passedPeak ?? 0)
   const [threshold, setThreshold] = useState(passedThreshold ?? 0)
@@ -56,6 +51,50 @@ const Report = () => {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
+
+  // 세션 종료 후 늦게 도착한 키워드 폴링 (Daglo STT가 늦게 완료되는 경우 대비)
+  const kwPollRef = useRef(null)
+  const kwPollCountRef = useRef(0)
+
+  const loadVoiceKeywords = (sessionId) => {
+    if (!sessionId) return
+    axios.get(`${API}/api/voice-stress/${sessionId}`).then(res => {
+      if (!res.data) return
+      const { keywords_history, session_summary } = res.data
+      if (keywords_history && keywords_history.length > 0) {
+        setKeywords(keywords_history)
+        // 키워드 도착 → 폴링 중단
+        if (kwPollRef.current) {
+          clearInterval(kwPollRef.current)
+          kwPollRef.current = null
+        }
+      }
+      if (session_summary) setSessionSummary(session_summary)
+    }).catch(() => {})
+  }
+
+  // 최초 즉시 실행 후 30초마다 최대 10번 재시도 (Daglo STT 지연 대응)
+  const startVoiceKeywordPolling = (sessionId) => {
+    if (!sessionId) return
+    loadVoiceKeywords(sessionId)
+    kwPollCountRef.current = 0
+    if (kwPollRef.current) clearInterval(kwPollRef.current)
+    kwPollRef.current = setInterval(() => {
+      kwPollCountRef.current += 1
+      if (kwPollCountRef.current >= 10) {
+        clearInterval(kwPollRef.current)
+        kwPollRef.current = null
+        return
+      }
+      loadVoiceKeywords(sessionId)
+    }, 30000)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (kwPollRef.current) clearInterval(kwPollRef.current)
+    }
+  }, [])
 
   // HRV DB 데이터 + Firebase graph_url 로드
   const loadHrvData = (sessionId) => {
@@ -105,8 +144,11 @@ const Report = () => {
     }
 
     // 진단 완료 후 진입 (state로 받은 값 우선)
-    // passedSessionId 우선 사용, 없으면 DB에서 조회
-    if (passedSessionId) loadHrvData(passedSessionId)
+    if (passedSessionId) {
+      loadHrvData(passedSessionId)
+      // 진단 완료 후 늦게 도착한 키워드도 조회 (Daglo STT가 진단 완료 후 완료되는 경우)
+      startVoiceKeywordPolling(String(passedSessionId))
+    }
 
     Promise.all([
       axios.get(`${API}/api/patients/${patientId}`).catch(() => ({ data: null })),
@@ -221,14 +263,34 @@ const Report = () => {
               <div className="keywords-section-header">
                 <span>주요 키워드</span>
               </div>
-              <div className="keyword-grid">
-                {SAMPLE_KEYWORDS.map(kw => (
-                  <div key={kw.id} className="kw-chip">
-                    <span className="kw-word">{kw.word}</span>
-                    <span className="kw-time">{kw.time}</span>
-                  </div>
-                ))}
-              </div>
+              {keywords.length === 0 ? (
+                <div className="empty-state">추출된 키워드가 없습니다</div>
+              ) : (
+                <div className="keyword-grid">
+                  {keywords.map(kw => (
+                    <div
+                      key={kw.id}
+                      className="kw-chip"
+                      style={{ cursor: kw.content ? 'pointer' : 'default', flexDirection: 'column', alignItems: 'flex-start' }}
+                      onClick={() => setSelectedKwId(selectedKwId === kw.id ? null : kw.id)}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                        <span className="kw-word">{kw.word}</span>
+                        <span className="kw-time">{kw.time}</span>
+                      </div>
+                      {selectedKwId === kw.id && kw.content && (
+                        <div style={{
+                          marginTop: 6, fontSize: 11, color: '#555', lineHeight: 1.6,
+                          background: '#F5F5F5', padding: '6px 8px', borderRadius: 4,
+                          whiteSpace: 'pre-wrap', width: '100%', borderLeft: '3px solid #FF7043',
+                        }}>
+                          {kw.content}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -241,48 +303,109 @@ const Report = () => {
               </div>
             </div>
             <div className="graph-area">
-              {graphUrl ? (
+              {rmssdData.length > 0 ? (() => {
+                // HH:MM → 자정 기준 분(minute) 변환
+                const toMin = hhmm => {
+                  const [h, m] = hhmm.split(':').map(Number)
+                  return h * 60 + m
+                }
+
+                // 키워드의 청크 시작 시각(HH:MM)으로부터 1분 범위 내 RMSSD 데이터 중
+                // 최대값(실제 피크) 지점에 마커를 배치
+                const kwMarkers = keywords
+                  .filter(kw => kw.time)
+                  .map(kw => {
+                    const hhmm = kw.time.slice(0, 5) // 'HH:MM:SS' → 'HH:MM'
+                    const chunkStart = toMin(hhmm)
+                    const chunkEnd   = chunkStart + 1  // 60초 청크 = 1분
+
+                    // 청크 시간 범위 내 모든 RMSSD 포인트 수집
+                    const inChunk = rmssdData.filter(d => {
+                      const t = toMin(d.label)
+                      return t >= chunkStart && t <= chunkEnd
+                    })
+                    if (inChunk.length === 0) return null
+
+                    // 해당 구간에서 RMSSD 최솟값(= 스트레스 가장 높은 지점) 선택
+                    const peak = inChunk.reduce((min, d) => d.value < min.value ? d : min, inChunk[0])
+
+                    // 임계치 미설정이면 모두 표시, 설정됐으면 스트레스 피크(value < 임계치)만 표시
+                    if (threshold > 0 && peak.value >= threshold) return null
+                    return { x: peak.x, word: kw.word }
+                  })
+                  .filter(Boolean)
+
+                // 같은 x 위치 키워드 그룹핑 (텍스트 겹침 방지)
+                const markerMap = {}
+                kwMarkers.forEach(m => {
+                  if (!markerMap[m.x]) markerMap[m.x] = []
+                  markerMap[m.x].push(m.word)
+                })
+                const groupedMarkers = Object.entries(markerMap).map(([x, words]) => ({
+                  x: Number(x),
+                  word: words.join(' · '),
+                }))
+
+                return (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={rmssdData} margin={{ top: 30, right: 16, left: -16, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="2 4" stroke="#F0F0F0" vertical={false} />
+                      <XAxis
+                        dataKey="x"
+                        tick={{ fill: '#BBB', fontSize: 10 }}
+                        tickLine={false}
+                        axisLine={{ stroke: '#EEE' }}
+                        interval={4}
+                      />
+                      <YAxis
+                        domain={[0, 65]}
+                        ticks={[0, 15, 30, 45, 60]}
+                        tick={{ fill: '#BBB', fontSize: 10 }}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <Tooltip content={<GraphTooltip />} />
+                      {threshold > 0 && (
+                        <ReferenceLine y={threshold} stroke="#E53935" strokeWidth={1.5}
+                          strokeDasharray="4 2"
+                          label={{ value: `임계치 ${threshold}ms`, position: 'insideTopRight', fontSize: 10, fill: '#E53935' }}
+                        />
+                      )}
+                      {/* 스트레스 피크 구간 키워드 마커 */}
+                      {groupedMarkers.map((m, i) => (
+                        <ReferenceLine
+                          key={i}
+                          x={m.x}
+                          stroke="#FF7043"
+                          strokeWidth={1.5}
+                          strokeDasharray="3 2"
+                          label={{
+                            value: m.word,
+                            position: 'insideTopLeft',
+                            fontSize: 10,
+                            fill: '#FF7043',
+                            dy: -(i % 3) * 12,
+                          }}
+                        />
+                      ))}
+                      <Line
+                        type="monotone"
+                        dataKey="value"
+                        stroke="#333333"
+                        strokeWidth={1.8}
+                        dot={false}
+                        activeDot={{ r: 4, fill: '#333', stroke: 'white', strokeWidth: 2 }}
+                        isAnimationActive={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )
+              })() : graphUrl ? (
                 <img src={graphUrl} alt="RMSSD 그래프" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-              ) : rmssdData.length === 0 ? (
+              ) : (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#BBB', fontSize: 13 }}>
                   저장된 HRV 데이터가 없습니다
                 </div>
-              ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={rmssdData} margin={{ top: 8, right: 16, left: -16, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="2 4" stroke="#F0F0F0" vertical={false} />
-                  <XAxis
-                    dataKey="x"
-                    tick={{ fill: '#BBB', fontSize: 10 }}
-                    tickLine={false}
-                    axisLine={{ stroke: '#EEE' }}
-                    interval={4}
-                  />
-                  <YAxis
-                    domain={[0, 65]}
-                    ticks={[0, 15, 30, 45, 60]}
-                    tick={{ fill: '#BBB', fontSize: 10 }}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <Tooltip content={<GraphTooltip />} />
-                  {threshold > 0 && (
-                    <ReferenceLine y={threshold} stroke="#E53935" strokeWidth={1.5}
-                      strokeDasharray="4 2"
-                      label={{ value: `임계치 ${threshold}ms`, position: 'insideTopRight', fontSize: 10, fill: '#E53935' }}
-                    />
-                  )}
-                  <Line
-                    type="monotone"
-                    dataKey="value"
-                    stroke="#333333"
-                    strokeWidth={1.8}
-                    dot={false}
-                    activeDot={{ r: 4, fill: '#333', stroke: 'white', strokeWidth: 2 }}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
               )}
             </div>
           </div>
@@ -296,13 +419,12 @@ const Report = () => {
               <span className="panel-title">주요 상황 요약</span>
             </div>
             <div className="report-summary-body">
-              {summary || (
-                <span style={{ color: '#CCC' }}>저장된 요약이 없습니다.</span>
-              )}
-              {summary && (
-                <div style={{ fontSize: 11, color: '#AAA', marginTop: 8 }}>
-                  {new Date().toLocaleString('ko-KR')}
+              {sessionSummary ? (
+                <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.8, color: '#333' }}>
+                  {sessionSummary}
                 </div>
+              ) : (
+                <span style={{ color: '#CCC' }}>저장된 요약이 없습니다.</span>
               )}
             </div>
           </div>
