@@ -1,3 +1,18 @@
 __pycache__/
 *.pyc
 **\node_modules
+
+# 환경변수 (API 키, DB 비밀번호 등 민감 정보)
+.env
+**/.env
+
+# Firebase 서비스 계정 인증서
+*-firebase-adminsdk-*.json
+python/*.json
+
+# ML 모델 파일 (대용량 바이너리)
+*.pkl
+
+# Python 가상환경
+python/venv/
+python/env/

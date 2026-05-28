@@ -26,13 +26,19 @@ import time
 import joblib
 import numpy as np
 import requests
-
-from dotenv import load_dotenv
-
 from stress_main import calculate_stress
 
+import os 
+from dotenv import load_dotenv
 load_dotenv()
 
+# ── 상수 ────────────────────────────────────────────────────────────────
+PATIENT_SPEAKER_ID  = 1       # 화자분리 결과에서 환자 라벨 (추후 변경 가능)
+TOP_KEYWORD_COUNT   = 5       # 키워드 추출 상위 N개
+RECORD_SECONDS      = 60      # 녹음 구간 (초)
+SAMPLE_RATE         = 16000   # Hz, mono
+NCP_STORAGE_ENDPOINT = "https://kr.object.ncloudstorage.com"
+NODE_API            = "http://localhost:3001"
 
 # ── 로거 ────────────────────────────────────────────────────────────────
 logging.basicConfig(
